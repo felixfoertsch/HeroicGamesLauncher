@@ -1,0 +1,13 @@
+{
+  "base": "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb",
+  "features": [
+    {
+      "name": "Stacked game copies",
+      "ref": "feat/stack-game-copies"
+    },
+    {
+      "name": "Amazon / Nile login recovery",
+      "ref": "fix/nile-amazon-login"
+    }
+  ]
+}

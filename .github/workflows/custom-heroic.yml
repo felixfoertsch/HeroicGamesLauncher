@@ -1,0 +1,170 @@
+name: Build custom Heroic
+run-name: Custom Heroic feature stack (${{ github.run_number }})
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [build/custom-heroic]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-heroic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      artifact_name: heroic-custom-${{ github.run_id }}-${{ github.run_attempt }}
+      source_sha: ${{ steps.stack.outputs.sourceSha }}
+      bundle_ref: ${{ steps.stack.outputs.bundleRef }}
+      version: ${{ steps.stack.outputs.version }}
+      tag: ${{ steps.stack.outputs.tag }}
+    steps:
+      - name: Check out the build recipe, not the final source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: recipe
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Set up Node for the build recipe
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Test branch/commit assembly using real temporary Git repositories
+        working-directory: recipe
+        run: node --test .github/scripts/custom-build/prepare.test.mjs
+      - name: Assemble the selected feature stack
+        id: stack
+        env:
+          BUILD_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+        run: |
+          node recipe/.github/scripts/custom-build/prepare.mjs \
+            --repo recipe \
+            --source "$RUNNER_TEMP/heroic-custom" \
+            --artifacts "$RUNNER_TEMP/heroic-artifacts" \
+            --manifest recipe/.github/custom-build.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --build-id "$BUILD_ID"
+      - name: Set up the pnpm version selected by the assembled source
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: ${{ runner.temp }}/heroic-custom/package.json
+          run_install: false
+      - name: Cache locked dependencies
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: ${{ runner.temp }}/heroic-custom/pnpm-lock.yaml
+      - name: Install dependencies and helper binaries
+        working-directory: ${{ runner.temp }}/heroic-custom
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec install-electron
+          pnpm download-helper-binaries
+      - name: Type-check, test, lint and check formatting on the combined source
+        working-directory: ${{ runner.temp }}/heroic-custom
+        run: |
+          pnpm codecheck
+          pnpm test --runInBand
+          pnpm lint
+          pnpm prettier
+      - name: Build custom Linux x64 packages without publishing
+        working-directory: ${{ runner.temp }}/heroic-custom
+        run: |
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --config electron-builder.custom.json \
+            --linux AppImage tar.xz --x64 --publish never
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Collect packages and checksums
+        working-directory: ${{ runner.temp }}/heroic-custom
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(dist/*.AppImage)
+          archives=(dist/*.tar.xz)
+          test "${#images[@]}" -gt 0
+          test "${#archives[@]}" -gt 0
+          cp "${images[@]}" "${archives[@]}" "$RUNNER_TEMP/heroic-artifacts/"
+          metadata=(dist/*-linux.yml dist/*.blockmap)
+          if ((${#metadata[@]})); then
+            cp "${metadata[@]}" "$RUNNER_TEMP/heroic-artifacts/"
+          fi
+          cd "$RUNNER_TEMP/heroic-artifacts"
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Upload the validated release candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: heroic-custom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/heroic-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out trusted recipe history for the source bundle prerequisites
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Download only this run's validated artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-assets
+      - name: Verify artifacts and recover the exact built source commit
+        env:
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          BUNDLE_REF: ${{ needs.build.outputs.bundle_ref }}
+        run: |
+          (cd release-assets && sha256sum -c SHA256SUMS)
+          git bundle verify release-assets/source.bundle
+          git fetch release-assets/source.bundle "$BUNDLE_REF:refs/heads/custom-build-source"
+          test "$(git rev-parse refs/heads/custom-build-source)" = "$SOURCE_SHA"
+      - name: Tag the built source and publish a prerelease to this fork only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          existing=$(git ls-remote --refs origin "refs/tags/$RELEASE_TAG" | cut -f1)
+          if [[ -n "$existing" ]]; then
+            test "$existing" = "$(git rev-parse refs/heads/custom-build-source)"
+          else
+            git push origin "refs/heads/custom-build-source:refs/tags/$RELEASE_TAG"
+          fi
+          # The bundle is for transport between jobs, not an end-user asset.
+          rm release-assets/source.bundle
+          # Recalculate the end-user checksum list without the internal job transport.
+          (cd release-assets && find . -maxdepth 1 -type f ! -name SHA256SUMS \
+            ! -name RELEASE-NOTES.md -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f \
+            ! -name RELEASE-NOTES.md -print0)
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Heroic $VERSION - custom Linux build" \
+            --notes-file release-assets/RELEASE-NOTES.md \
+            --prerelease --latest=false
