@@ -37,7 +37,7 @@ export default class NileLibraryManager implements LibraryManager {
     const globalNileConfig = join(app.getPath('appData'), 'nile')
     if (!existsSync(nileConfigPath) && existsSync(globalNileConfig)) {
       copySync(globalNileConfig, nileConfigPath)
-      await NileUser.getUserData()
+      NileUser.getUserData()
     }
 
     this.refresh()
@@ -227,7 +227,7 @@ export default class NileLibraryManager implements LibraryManager {
       return installed.find((game) => game.id === appName)
     } catch (error) {
       logError(
-        ['Corrupted installed.json file, cannot load installed games', error],
+        ['Could not read', `${nileInstalled}:`, error],
         LogPrefix.Nile
       )
     }
