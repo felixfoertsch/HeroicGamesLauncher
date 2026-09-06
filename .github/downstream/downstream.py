@@ -9,6 +9,8 @@ import re
 import subprocess
 import sys
 
+from calver import next_version, validate_plan_version, FEED_URL
+
 REPOSITORY = "felixfoertsch/HeroicGamesLauncher"
 UPSTREAM = "Heroic-Games-Launcher/HeroicGamesLauncher"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -81,10 +83,12 @@ def patch_series(repo, base, head):
     return git(repo, "rev-list", "--reverse", f"{base}..{head}").splitlines()
 
 
-def replay(repo, source, base, head, new_base):
+def replay(repo, source, base, head, new_base, *, bootstrap=False):
     """Replay without mutating any existing branch; never silently discard a patch."""
     patches = patch_series(repo, base, head)
-    if not ancestor(repo, base, new_base):
+    initial_stable = (bootstrap and base == "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb"
+                      and new_base == "2cc01fe4c88703ed002eafa6eb0ca06bb43443fc")
+    if not ancestor(repo, base, new_base) and not initial_stable:
         raise ValueError("Refusing a rewind or unrelated upstream history")
     if Path(source).exists():
         raise ValueError("Source destination already exists")
@@ -137,8 +141,13 @@ def prepare(repo, source, output, release, build_id, event):
     git(repo, "fetch", "--no-tags", f"https://github.com/{UPSTREAM}.git",
         f"+refs/tags/{tag}:{incoming}")
     upstream_sha = git(repo, "rev-parse", f"{incoming}^{{commit}}")
-    # The initial tested baseline is newer than v2.22.1. Never downgrade it.
-    if ancestor(repo, upstream_sha, base):
+    # One explicitly pinned bootstrap removes seven unrelated development commits.
+    # Subsequent updates retain the normal no-rewind policy.
+    bootstrap = (base == "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb"
+                 and upstream_sha == "2cc01fe4c88703ed002eafa6eb0ca06bb43443fc")
+    if bootstrap:
+        new_base = upstream_sha
+    elif ancestor(repo, upstream_sha, base):
         new_base = base
     elif ancestor(repo, base, upstream_sha):
         new_base = upstream_sha
@@ -147,7 +156,7 @@ def prepare(repo, source, output, release, build_id, event):
     should_build = event != "schedule" or new_base != base or published != head
     output.mkdir(parents=True)
     if new_base != base:
-        candidate, replayed = replay(repo, source, base, head, new_base)
+        candidate, replayed = replay(repo, source, base, head, new_base, bootstrap=bootstrap)
     else:
         candidate = head
         replayed = [{"original": sha, "commit": sha, "status": "retained",
@@ -158,22 +167,25 @@ def prepare(repo, source, output, release, build_id, event):
     match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:[-+].*)?", pkg["version"])
     if not match:
         raise ValueError("Unrecognized application version")
-    version = f"{match[1]}-felix.{build_id}"
+    if match[1] != tag.removeprefix("v"):
+        raise ValueError("Source package version does not match the upstream release tag")
+    remote_tags = git(repo, "ls-remote", "--tags", "--refs", "origin")
+    tag_names = [line.split()[1].removeprefix("refs/tags/") for line in remote_tags.splitlines()]
+    versions = next_version(tag, tag_names)
+    version = versions["version"]
     plan = {"schema": 1, "repository": REPOSITORY, "expectedMain": head,
             "expectedBase": base, "expectedPublished": published,
             "candidate": candidate, "base": new_base, "build": should_build,
             "upstream": {"tag": tag, "sha": upstream_sha}, "patches": replayed,
-            "version": version, "tag": f"v{version}", "buildId": build_id,
-            "packageManager": pkg.get("packageManager"),
-            "pacmanVersion": f"{match[1]}.felix{build_id.split('.')[0]}",
-            "pacmanRelease": build_id.split('.')[1]}
+            **versions, "buildId": build_id,
+            "packageManager": pkg.get("packageManager")}
     write_json(output / "build-info.json", plan)
     if should_build:
         git(repo, "update-ref", "refs/downstream-candidate", candidate)
         git(repo, "bundle", "create", str(output / "source.bundle"),
             "refs/downstream-candidate", f"^{base}")
-        git(repo, "archive", "--format=tar.gz", f"--prefix=Heroic-{version}/",
-            f"--output={output / ('Heroic-' + version + '-source.tar.gz')}", candidate)
+        git(repo, "archive", "--format=tar.gz", f"--prefix=Heroic-{plan['tag']}/",
+            f"--output={output / ('Heroic-' + plan['tag'] + '-source.tar.gz')}", candidate)
     outputs({"build": should_build, "candidate": candidate, "version": version,
              "tag": plan["tag"], "pacman_version": plan["pacmanVersion"],
              "pacman_release": plan["pacmanRelease"]})
@@ -193,11 +205,13 @@ def packaging(source, output):
     config = {"extends": str(Path(source).resolve() / "electron-builder.yml"),
               "extraMetadata": {"version": plan["version"],
                                 "repository": {"type": "git", "url": f"https://github.com/{REPOSITORY}"}},
-              "publish": [{"provider": "github", "owner": "felixfoertsch",
-                           "repo": "HeroicGamesLauncher", "releaseType": "release"}],
-              "linux": {"artifactName": "Heroic-${version}-custom-${arch}.${ext}"}}
+              "detectUpdateChannel": False,
+              "publish": [{"provider": "generic", "url": FEED_URL, "channel": "latest"}],
+              "linux": {"artifactName": "Heroic-" + plan["tag"] + "-custom-${arch}.${ext}"}}
     write_json(output / "packaging.json", config)
-    notes = (f"# Heroic {plan['version']}\n\nUnofficial Linux x64 downstream build.\n\n"
+    notes = (f"# Heroic {plan['tag']}\n\nUnofficial Linux x64 downstream build.\n\n"
+             f"CalVer date: `{plan['calver']['date']}` (Europe/Berlin), revision `{plan['calver']['sequence']}`.\n"
+             f"Electron version: `{plan['version']}`; pacman: `{plan['pacmanVersion']}-{plan['pacmanRelease']}`.\n\n"
              f"Source: `{plan['candidate']}`. Upstream baseline: `{plan['base']}`.\n"
              f"Latest stable release checked: `{plan['upstream']['tag']}`.\n\n"
              "## Carried changes\n\n" +
@@ -251,8 +265,7 @@ def promote(repo, output, expected_head):
     for key in ("candidate", "base", "expectedMain", "expectedBase"):
         if not SHA.fullmatch(plan[key]):
             raise ValueError("Invalid promotion SHA")
-    if not re.fullmatch(r"v\d+\.\d+\.\d+-felix\.\d+\.\d+", plan["tag"]):
-        raise ValueError("Invalid release tag")
+    validate_plan_version(plan)
     git(repo, "bundle", "verify", str(output / "source.bundle"))
     git(repo, "fetch", str(output / "source.bundle"),
         "refs/downstream-candidate:refs/downstream-promote")

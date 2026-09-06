@@ -107,6 +107,10 @@ class DownstreamTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rewind"):
             d.replay(self.repo, self.source, self.a, self.b, self.base)
 
+    def test_bootstrap_flag_cannot_authorize_an_arbitrary_rewind(self):
+        with self.assertRaisesRegex(ValueError, "rewind"):
+            d.replay(self.repo, self.source, self.a, self.b, self.base, bootstrap=True)
+
     def test_existing_destination_rejected(self):
         self.source.mkdir()
         (self.source / "keep").write_text("do not overwrite")
@@ -156,7 +160,8 @@ class DownstreamTests(unittest.TestCase):
         plan = self.plan()
         d.packaging(self.source, self.output)
         cfg = json.loads((self.output / "packaging.json").read_text())
-        self.assertEqual(cfg["publish"][0]["owner"], "felixfoertsch")
+        self.assertEqual(cfg["publish"][0]["url"], d.FEED_URL)
+        self.assertEqual(cfg["publish"][0]["provider"], "generic")
         self.assertEqual(cfg["extraMetadata"]["version"], plan["version"])
         self.assertEqual(d.git(self.source, "status", "--porcelain"), "")
 
@@ -182,7 +187,7 @@ class DownstreamTests(unittest.TestCase):
         self.assertEqual(d.remote_sha(self.repo, "refs/heads/main"), concurrent)
 
     def test_server_rejection_is_atomic(self):
-        self.plan(self.upstream())
+        plan = self.plan(self.upstream())
         d.checksums(self.output)
         hook = self.remote / "hooks/pre-receive"
         hook.write_text("#!/bin/sh\nwhile read old new ref; do\n"
@@ -193,7 +198,7 @@ class DownstreamTests(unittest.TestCase):
             d.promote(self.repo, self.output, self.b)
         self.assertEqual(d.remote_sha(self.repo, "refs/heads/main"), self.b)
         self.assertEqual(d.remote_sha(self.repo, "refs/heads/downstream-base"), self.base)
-        self.assertEqual(d.remote_sha(self.repo, "refs/tags/v2.0.0-felix.12345.1", False), "")
+        self.assertEqual(d.remote_sha(self.repo, f"refs/tags/{plan['tag']}", False), "")
 
     def test_tampered_artifact_prevents_promotion(self):
         self.plan()
