@@ -1,0 +1,52 @@
+name: Downstream release maintenance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/downstream/release_cleanup.py'
+      - '.github/downstream/release_notes.py'
+      - '.github/workflows/downstream-maintenance.yml'
+      - '.github/workflows/cla.yml'
+  workflow_run:
+    workflows: [Downstream Heroic]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heroic-downstream-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    if: >-
+      github.repository == 'felixfoertsch/HeroicGamesLauncher' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Check out trusted main, never a PR or workflow artifact
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Test metadata validation and conservative archival
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s .github/downstream -p test_release_notes.py
+      - name: Disable inherited upstream-only CLA automation in this fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable cla.yml --repo felixfoertsch/HeroicGamesLauncher
+      - name: Refresh CalVer release descriptions and archive superseded run-ID builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/downstream/release_cleanup.py --apply
