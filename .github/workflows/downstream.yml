@@ -3,7 +3,7 @@ run-name: Downstream Heroic (${{ github.run_number }})
 
 on:
   push:
-    branches: [main, build/downstream-preview]
+    branches: [main, build/downstream-preview, build/calver-preview]
   schedule:
     - cron: '23 */6 * * *'
   workflow_dispatch:
@@ -119,11 +119,13 @@ jobs:
           pnpm exec electron-vite build
           pnpm exec electron-builder --config "$RUNNER_TEMP/release/packaging.json" \
             --linux AppImage tar.xz --x64 --publish never
-          grep -Fx 'owner: felixfoertsch' dist/linux-unpacked/resources/app-update.yml
-          grep -Fx 'repo: HeroicGamesLauncher' dist/linux-unpacked/resources/app-update.yml
+          grep -Fx 'provider: generic' dist/linux-unpacked/resources/app-update.yml
+          grep -Fx 'url: https://github.com/felixfoertsch/HeroicGamesLauncher/releases/download/downstream-feed' dist/linux-unpacked/resources/app-update.yml
+          grep -Fx 'channel: latest' dist/linux-unpacked/resources/app-update.yml
           git diff --exit-code
           git diff --cached --exit-code
           cp dist/*.AppImage dist/*.tar.xz dist/*-linux.yml "$RUNNER_TEMP/release/"
+          python3 ../control/.github/downstream/calver.py "$RUNNER_TEMP/release"
       - name: Build and inspect the Arch package in the official Arch container
         if: steps.prepare.outputs.build == 'true'
         env:
@@ -148,6 +150,8 @@ jobs:
               cd /work
               runuser -u builder -- makepkg --nodeps --cleanbuild --clean --noconfirm
               pacman -Qip ./*.pkg.tar.zst
+              test "$(vercmp 2.22.1_2026.09.06.10 2.22.1_2026.09.06.9)" -gt 0
+              test "$(vercmp 2.22.2_2026.09.06.1 2.22.1_2026.12.31.99)" -gt 0
               chown -R "$HOST_UID:$HOST_GID" /work
             '
           cp "$RUNNER_TEMP/arch-package/"*.pkg.tar.zst "$RUNNER_TEMP/release/"

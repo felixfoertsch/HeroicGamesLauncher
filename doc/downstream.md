@@ -23,10 +23,11 @@ A rejected or closed upstream PR never removes a downstream patch.
 - `build/downstream-preview`: non-publishing validation branch, not a package
   channel. Pushes here exercise the complete build without changing `main`.
 
-The initial baseline `e95e407a` is seven commits newer than stable `v2.22.1`.
-It is retained to avoid downgrading the version already tested. Later stable
-releases are eligible when they contain that baseline. Development commits,
-prereleases, unrelated histories and backwards release moves are not adopted.
+The first CalVer run replays our local series from the initial development
+baseline `e95e407a` onto the actual stable `v2.22.1` commit `2cc01fe4`. This
+one-time, exactly pinned bootstrap removes seven unrelated development commits
+and is fully validated before promotion. After that, only forward stable
+upstream releases are adopted; arbitrary rewinds and divergent histories stop.
 
 Checks run at 00:23, 06:23, 12:23 and 18:23 UTC, on pushes to `main`, and with
 **Actions > Downstream Heroic > Run workflow** on `main`. A scheduled no-change
@@ -61,6 +62,42 @@ configured, it also includes the signed pacman package and repository database.
 Releases are marked as normal releases **of this unofficial fork**, never as
 upstream Heroic releases. Existing release tags and assets are not overwritten.
 The separate `pacman` prerelease is a rolling package index, not an app release.
+
+## CalVer versions and AppImage updates
+
+Public release tags preserve the upstream tag and use Europe/Berlin dates:
+
+```text
+v2.22.1-2026.09.06.1
+v2.22.1-2026.09.06.2
+v2.22.2-2026.09.07.1
+```
+
+`n` starts at 1 per upstream-tag/date pair and is one above the highest existing
+remote tag in that pair. A failed publication may reserve a number; gaps are
+allowed, but versioned tags and assets are never overwritten. Build runs remain
+serialized. The date is determined when a candidate is prepared.
+
+Electron requires valid SemVer, so its internal version is
+`2.22.1-2026.9.6.1` (numeric prerelease identifiers cannot have leading zeros).
+Pacman uses `2.22.1_2026.09.06.1-1` because pkgver cannot contain a hyphen; the
+last `-1` is the Arch package release. Public release tags and archive filenames
+retain the requested padded CalVer spelling. Generated `build-info.json` records
+all forms; it is not a feature-selection manifest.
+
+Install the first CalVer AppImage manually when switching from the earlier
+`2.22.1-felix.<run-id>.<attempt>` scheme: those versions do not sort before the
+new numeric prerelease under SemVer. New AppImages use a generic feed at
+`https://github.com/felixfoertsch/HeroicGamesLauncher/releases/download/downstream-feed`.
+Its `latest-linux.yml` names an exact versioned AppImage and its SHA512 hash. It
+is updated only after the complete CalVer release is public. This avoids trying
+to parse padded public tags as SemVer and never selects official unpatched
+Heroic releases. Heroic still prompts before installing updates.
+
+`downstream-feed` and `pacman` are rolling metadata releases, not application
+versions. Neither replaces immutable CalVer releases. Source archives contain
+the exact tagged source; the separate `packaging.json` and build information
+record the generated version/feed settings used by electron-builder.
 
 ## One-time package signing setup
 
