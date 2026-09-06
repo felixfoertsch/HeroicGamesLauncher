@@ -1,0 +1,97 @@
+.gameCopiesBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--text-default);
+  border-radius: 50%;
+  background: var(--background-darker);
+  color: var(--text-default);
+  font-family: var(--primary-font-family);
+  font-size: var(--text-sm);
+  font-weight: var(--bold);
+  line-height: 1;
+  cursor: pointer;
+  z-index: 6;
+}
+
+.gameCopiesBadge:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.gameCopiesBadge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.gameCard > .gameCopiesBadge {
+  position: absolute;
+  top: var(--space-2xs-fixed);
+  right: var(--space-2xs-fixed);
+}
+
+.gameCard:has(> .gameCopiesBadge) .store-icon {
+  top: calc(2rem + var(--space-sm-fixed));
+}
+
+/* Reserve the end of the store column; keep the existing list/header grid. */
+.gameListItem > .gameCopiesBadge {
+  position: absolute;
+  inset-inline-end: calc(10% + var(--space-2xs-fixed));
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.gameListItem:has(> .gameCopiesBadge) .runner {
+  padding-inline-end: calc(2rem + var(--space-xs-fixed));
+}
+
+.gameCopiesList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: 0;
+  margin: var(--space-md) 0;
+  list-style: none;
+}
+
+.gameCopiesList .gameCopiesLink {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--text-secondary);
+  border-radius: var(--space-3xs);
+  color: var(--text-default);
+  text-decoration: none;
+}
+
+.gameCopiesLink:hover,
+.gameCopiesLink:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.gameCopiesLink .store-icon {
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  fill: currentColor;
+}
+
+.gameCopiesDetails {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gameCopiesStatus {
+  flex: 0 0 auto;
+  font-size: var(--text-sm);
+}
