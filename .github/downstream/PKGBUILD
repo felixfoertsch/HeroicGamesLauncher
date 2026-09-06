@@ -1,0 +1,47 @@
+# Downstream binary package. Populated by package.mjs after source checks/build.
+pkgname=heroic-felix
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc='Heroic Games Launcher with Felix downstream fixes (AI-assisted by Astra)'
+arch=('x86_64')
+url='https://github.com/felixfoertsch/HeroicGamesLauncher'
+license=('GPL-3.0-only')
+depends=('alsa-lib' 'at-spi2-core' 'cairo' 'dbus' 'expat' 'glib2' 'glibc'
+         'gtk3' 'libcups' 'libdrm' 'libx11' 'libxcb' 'libxcomposite' 'libxdamage'
+         'libxext' 'libxfixes' 'libxkbcommon' 'libxrandr' 'mesa' 'nspr' 'nss'
+         'pango' 'gcc-libs' 'zlib')
+optdepends=('wine: running Windows games' 'umu-launcher: Proton runtime'
+            'gamemode: game performance optimizations')
+provides=('heroic-games-launcher' 'heroic')
+conflicts=('heroic-games-launcher' 'heroic-games-launcher-bin'
+           'heroic-games-launcher-git' 'heroic')
+options=('!strip' '!debug')
+source=('heroic.tar.xz')
+noextract=('heroic.tar.xz')
+sha256sums=('@SHA256@')
+
+package() {
+  mkdir -p "$srcdir/unpacked" "$pkgdir/opt/heroic-felix"
+  bsdtar -xf "$srcdir/heroic.tar.xz" -C "$srcdir/unpacked"
+  local roots=()
+  mapfile -d '' roots < <(find "$srcdir/unpacked" -mindepth 1 -maxdepth 1 -print0)
+  [[ ${#roots[@]} == 1 && -d "${roots[0]}" && -f "${roots[0]}/heroic" ]] || return 1
+  cp -a "${roots[0]}/." "$pkgdir/opt/heroic-felix/"
+  install -dm755 "$pkgdir/usr/bin" "$pkgdir/usr/share/applications"
+  ln -s /opt/heroic-felix/heroic "$pkgdir/usr/bin/heroic"
+  cat > "$pkgdir/usr/share/applications/heroic-felix.desktop" <<'DESKTOP'
+[Desktop Entry]
+Name=Heroic (Felix)
+Comment=Heroic Games Launcher with downstream fixes
+Exec=/opt/heroic-felix/heroic %U
+Terminal=false
+Type=Application
+Icon=heroic-felix
+Categories=Game;
+MimeType=x-scheme-handler/heroic;
+StartupWMClass=Heroic
+DESKTOP
+  local icon="$pkgdir/opt/heroic-felix/resources/app.asar.unpacked/build/icon.png"
+  [[ -f "$icon" ]] || return 1
+  install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/256x256/apps/heroic-felix.png"
+}

@@ -1,0 +1,262 @@
+name: Maintain downstream Heroic
+run-name: Downstream Heroic (${{ github.event_name }})
+
+on:
+  push:
+    branches: [main, build/downstream]
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build a new CalVer revision even when source is unchanged
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heroic-downstream
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      needed: ${{ steps.prepare.outputs.needed }}
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: recipe
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Test CalVer, real Git replay, and publication leases
+        run: node --test recipe/.github/downstream/prepare.test.mjs
+      - name: Find upstream release and replay the linear patch series
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+        run: node recipe/.github/downstream/prepare.mjs
+      - name: Save the pinned plan and candidate source
+        if: steps.prepare.outputs.needed == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: downstream-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan/*
+          retention-days: 14
+          if-no-files-found: error
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: recipe
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: downstream-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Recover the pinned source
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          git -C recipe bundle verify "$GITHUB_WORKSPACE/plan/source.bundle"
+          git -C recipe fetch "$GITHUB_WORKSPACE/plan/source.bundle" refs/heads/downstream-candidate
+          test "$(git -C recipe rev-parse FETCH_HEAD)" = "$SOURCE_SHA"
+          git -C recipe worktree add --detach "$GITHUB_WORKSPACE/source" "$SOURCE_SHA"
+          node recipe/.github/downstream/package.mjs stage
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: source/package.json
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+      - name: Install pinned application dependencies and helpers
+        working-directory: source
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec install-electron
+          pnpm download-helper-binaries
+      - name: Check types and application tests
+        working-directory: source
+        run: |
+          pnpm codecheck
+          pnpm test --runInBand
+      - name: Check lint and formatting
+        working-directory: source
+        run: |
+          pnpm lint > "$RUNNER_TEMP/lint.log" 2>&1 || { cat "$RUNNER_TEMP/lint.log"; exit 1; }
+          tail -n 4 "$RUNNER_TEMP/lint.log"
+          pnpm prettier
+      - name: Retain formatting diagnostics without accepting changes
+        if: failure()
+        working-directory: source
+        run: |
+          if [[ -x node_modules/.bin/prettier ]]; then
+            cp package.json "$RUNNER_TEMP/packaging-package.json"
+            pnpm exec prettier --write .github/downstream/*.mjs .github/workflows/downstream.yml doc/downstream.md
+            git diff -- .github/downstream .github/workflows/downstream.yml doc/downstream.md | tee "$RUNNER_TEMP/format.patch"
+          fi
+      - name: Install Arch packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pacman-package-manager makepkg libarchive-tools fakeroot zstd
+      - name: Build AppImage and tar.xz
+        working-directory: source
+        run: |
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --config electron-builder.downstream.json --linux AppImage tar.xz --x64 --publish never
+          git diff --exit-code -- . ':!package.json'
+      - name: Prepare versioned assets and matching source
+        run: |
+          node recipe/.github/downstream/package.mjs collect
+          node recipe/.github/downstream/package.mjs pacman
+          rm -rf release/source-archive release/tracked-source.tar
+      - name: Build and inspect the pacman package
+        working-directory: arch-package
+        run: |
+          cp /etc/makepkg.conf makepkg.conf
+          printf '\nPKGEXT=".pkg.tar.zst"\n' >> makepkg.conf
+          # Binaries were built above; Arch dependency names are package metadata
+          # and cannot be resolved against Ubuntu's installed-package database.
+          makepkg --nodeps --noconfirm --config "$PWD/makepkg.conf"
+          cp heroic-felix-*.pkg.tar.zst ../release/
+          pacman -Qip heroic-felix-*.pkg.tar.zst
+          test "$(vercmp 2.22.1_2026.09.06.10 2.22.1_2026.09.06.9)" -gt 0
+          test "$(vercmp 2.22.2_2026.09.06.1 2.22.1_2026.12.31.99)" -gt 0
+      - name: Checksum the unsigned release candidate
+        shell: bash
+        run: |
+          cd release
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: downstream-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release/*
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+      - name: Save failed-check diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: downstream-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/lint.log
+            ${{ runner.temp }}/format.patch
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: [prepare, build]
+    if: github.ref == 'refs/heads/main' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      EXPECTED_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: recipe
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: downstream-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: plan
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: downstream-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release
+      - name: Verify candidates and install repository signing tools
+        run: |
+          (cd release && sha256sum -c SHA256SUMS)
+          sudo apt-get update
+          sudo apt-get install -y pacman-package-manager libarchive-tools gnupg
+      - name: Sign the pacman repository when configured
+        env:
+          PACMAN_SIGNING_KEY: ${{ secrets.PACMAN_SIGNING_KEY }}
+          PACMAN_SIGNING_PASSPHRASE: ${{ secrets.PACMAN_SIGNING_PASSPHRASE }}
+          PACMAN_SIGNING_FINGERPRINT: ${{ vars.PACMAN_SIGNING_FINGERPRINT }}
+        run: bash recipe/.github/downstream/sign.sh
+      - name: Atomically promote the tested source with explicit leases
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_PUSH_TOKEN || github.token }}
+        run: node recipe/.github/downstream/publish.mjs promote
+      - name: Publish the complete CalVer release and update feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node recipe/.github/downstream/publish.mjs release
+
+  report:
+    needs: [prepare, build, publish]
+    if: always() && github.repository == 'felixfoertsch/HeroicGamesLauncher' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Report blocked updates without changing a working release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title='Downstream Heroic update needs attention'
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          failed=$(jq '[.[] | .result] | any(. == "failure")' <<< "$RESULTS")
+          published=$(jq -r '.publish.result' <<< "$RESULTS")
+          echo "Upstream check: $url" >> "$GITHUB_STEP_SUMMARY"
+          if [[ $(gh api "repos/$GITHUB_REPOSITORY" --jq .has_issues) != true ]]; then
+            echo 'Enable Issues in repository Settings to receive a persistent blocked-update report.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          if [[ "$failed" == true ]]; then
+            body="The downstream update/build/publication pipeline stopped. No patch was silently dropped. Inspect the failed step and retained diagnostics: $url"
+            if [[ -n "$number" ]]; then
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+            fi
+          elif [[ "$published" == success && -n "$number" ]]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "A validated release and update feed were published successfully: $url"
+          fi
