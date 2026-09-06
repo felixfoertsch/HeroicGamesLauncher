@@ -1,0 +1,71 @@
+name: Prepare reviewed downstream formatting
+on:
+  push:
+    branches: [build/downstream-format-input]
+permissions:
+  contents: read
+jobs:
+  format:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 028110aed63ea1159cc17ed86366295f05aca017
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install the pinned standalone formatter without project scripts
+        run: npm install --ignore-scripts --prefix "$RUNNER_TEMP/formatter" prettier@3.7.4
+      - name: Apply reviewed scoped corrections
+        shell: python
+        run: |
+          from pathlib import Path
+          def replace(path, old, new):
+              p = Path(path)
+              value = p.read_text()
+              assert value.count(old) == 1, (path, old)
+              p.write_text(value.replace(old, new))
+          replace('.github/downstream/prepare.mjs', 'mkdirSync, readFileSync, writeFileSync', 'mkdirSync, writeFileSync')
+          replace('.github/downstream/prepare.test.mjs', 'mkdtempSync, readFileSync, writeFileSync', 'mkdtempSync, writeFileSync')
+          replace('.github/downstream/package.mjs', 'fileURLToPath, pathToFileURL', 'pathToFileURL')
+          replace('eslint.config.mjs', "  {\n    ignores: ['build/'", "  {\n    ...tseslint.configs.disableTypeChecked,\n    files: ['.github/downstream/**/*.mjs'],\n    languageOptions: {\n      globals: { process: 'readonly', console: 'readonly', URL: 'readonly' },\n      parserOptions: { project: false, projectService: false }\n    }\n  },\n  {\n    ignores: ['build/'")
+          replace('.github/downstream/prepare.mjs', "  if (previousBase === upstreamSha && alreadyBuilt && process.env.FORCE_BUILD !== 'true') {", "  const feed = releases.find((r) => r.tag_name === 'downstream-feed' && !r.draft)\n  const fullyPublished = feed?.body?.includes(`\\nsource_sha=${recipeSha}\\n`)\n  if (previousBase === upstreamSha && alreadyBuilt && fullyPublished && process.env.FORCE_BUILD !== 'true') {")
+          replace('.github/downstream/prepare.mjs', '  const alreadyBuilt = published.some((r) => {', "  const bootstrap = previousBase === 'e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb' && published.length === 0\n  if (previousBase !== upstreamSha && !ancestor(repo, previousBase, upstreamSha) &&\n      !(bootstrap && ancestor(repo, upstreamSha, previousBase))) {\n    throw new Error('Upstream history rewound or diverged; manual review required')\n  }\n  const alreadyBuilt = published.some((r) => {")
+          replace('.github/downstream/publish.mjs', '  const releases = api(`repos/${forkRepository}/releases?per_page=100`)', "  const releases = JSON.parse(run('gh', ['api', '--paginate', '--slurp',\n    `repos/${forkRepository}/releases?per_page=100`])).flat()")
+          replace('.github/downstream/publish.mjs', "function api(path) { return JSON.parse(run('gh', ['api', path])) }\n", '')
+          replace('.github/downstream/publish.mjs', '  console.log(`Published https://github.com/${forkRepository}/releases/tag/${plan.version.tag}`)', "  gh('release', 'edit', 'downstream-feed', '--notes',\n    `Mutable downstream update metadata. Application releases remain immutable.\\n\\nsource_sha=${plan.sourceSha}\\nrelease_tag=${plan.version.tag}\\n`)\n  console.log(`Published https://github.com/${forkRepository}/releases/tag/${plan.version.tag}`)")
+      - name: Format only the new scripts and scoped lint configuration
+        run: |
+          node "$RUNNER_TEMP/formatter/node_modules/prettier/bin/prettier.cjs" --write .github/downstream/*.mjs eslint.config.mjs
+          node --test .github/downstream/prepare.test.mjs
+          git diff --check
+          git diff --stat
+      - name: Store a candidate commit without moving any branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          paths = ['eslint.config.mjs'] + sorted(str(p) for p in Path('.github/downstream').glob('*.mjs'))
+          tree = [{'path': p, 'mode': '100644', 'type': 'blob', 'content': Path(p).read_text()} for p in paths]
+          Path('/tmp/tree.json').write_text(json.dumps({'base_tree': 'c68ba2c3ff50316394c5f2a517215ad7b82d3856', 'tree': tree}))
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/trees" --input /tmp/tree.json > /tmp/tree-result.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          sha = json.loads(Path('/tmp/tree-result.json').read_text())['sha']
+          data = {'tree': sha, 'parents': ['028110aed63ea1159cc17ed86366295f05aca017'], 'message': 'ci: Harden downstream retry detection and format build scripts\n\nKeep typed application lint intact while linting standalone JavaScript without a TypeScript project. Require completed feed publication before skipping a rebuild. Reject unexpected upstream rewinds. Apply the pinned project formatter.\n\nAI-assisted-by: Astra (OpenAI)'}
+          Path('/tmp/commit.json').write_text(json.dumps(data))
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input /tmp/commit.json --jq .sha | tee /tmp/candidate-sha
+          printf 'Candidate commit (no ref moved): `%s`\n' "$(cat /tmp/candidate-sha)" >> "$GITHUB_STEP_SUMMARY"
