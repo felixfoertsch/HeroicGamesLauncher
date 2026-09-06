@@ -1,0 +1,91 @@
+name: Prepare CalVer integration candidate
+on:
+  push:
+    branches: [build/calver-input]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Apply the reviewed CalVer integration to the existing pipeline
+        shell: python
+        run: |
+          from pathlib import Path
+          def replace(path, old, new):
+              p = Path(path)
+              content = p.read_text()
+              assert content.count(old) == 1, (path, old, content.count(old))
+              p.write_text(content.replace(old, new))
+          script = '.github/downstream/downstream.py'
+          replace(script, 'import sys\n', 'import sys\n\nfrom calver import next_version, validate_plan_version, FEED_URL\n')
+          replace(script, 'def replay(repo, source, base, head, new_base):', 'def replay(repo, source, base, head, new_base, *, bootstrap=False):')
+          replace(script, '    if not ancestor(repo, base, new_base):\n        raise ValueError("Refusing a rewind or unrelated upstream history")', '    initial_stable = (bootstrap and base == "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb"\n                      and new_base == "2cc01fe4c88703ed002eafa6eb0ca06bb43443fc")\n    if not ancestor(repo, base, new_base) and not initial_stable:\n        raise ValueError("Refusing a rewind or unrelated upstream history")')
+          replace(script, '    # The initial tested baseline is newer than v2.22.1. Never downgrade it.\n    if ancestor(repo, upstream_sha, base):', '    # One explicitly pinned bootstrap removes seven unrelated development commits.\n    # Subsequent updates retain the normal no-rewind policy.\n    bootstrap = (base == "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb"\n                 and upstream_sha == "2cc01fe4c88703ed002eafa6eb0ca06bb43443fc")\n    if bootstrap:\n        new_base = upstream_sha\n    elif ancestor(repo, upstream_sha, base):')
+          replace(script, 'candidate, replayed = replay(repo, source, base, head, new_base)', 'candidate, replayed = replay(repo, source, base, head, new_base, bootstrap=bootstrap)')
+          replace(script, '    version = f"{match[1]}-felix.{build_id}"', '    if match[1] != tag.removeprefix("v"):\n        raise ValueError("Source package version does not match the upstream release tag")\n    remote_tags = git(repo, "ls-remote", "--tags", "--refs", "origin")\n    tag_names = [line.split()[1].removeprefix("refs/tags/") for line in remote_tags.splitlines()]\n    versions = next_version(tag, tag_names)\n    version = versions["version"]')
+          replace(script, '"version": version, "tag": f"v{version}", "buildId": build_id,', '**versions, "buildId": build_id,')
+          replace(script, '"packageManager": pkg.get("packageManager"),\n            "pacmanVersion": f"{match[1]}.felix{build_id.split(\'.\')[0]}",\n            "pacmanRelease": build_id.split(\'.\')[1]}', '"packageManager": pkg.get("packageManager")}')
+          replace(script, 'f"--prefix=Heroic-{version}/",\n            f"--output={output / (\'Heroic-\' + version + \'-source.tar.gz\')}", candidate)', 'f"--prefix=Heroic-{plan[\'tag\']}/",\n            f"--output={output / (\'Heroic-\' + plan[\'tag\'] + \'-source.tar.gz\')}", candidate)')
+          replace(script, '"publish": [{"provider": "github", "owner": "felixfoertsch",\n                           "repo": "HeroicGamesLauncher", "releaseType": "release"}],\n              "linux": {"artifactName": "Heroic-${version}-custom-${arch}.${ext}"}', '"detectUpdateChannel": False,\n              "publish": [{"provider": "generic", "url": FEED_URL, "channel": "latest"}],\n              "linux": {"artifactName": "Heroic-" + plan["tag"] + "-custom-${arch}.${ext}"}')
+          replace(script, 'notes = (f"# Heroic {plan[\'version\']}\\n\\nUnofficial Linux x64 downstream build.\\n\\n"', 'notes = (f"# Heroic {plan[\'tag\']}\\n\\nUnofficial Linux x64 downstream build.\\n\\n"\n             f"CalVer date: `{plan[\'calver\'][\'date\']}` (Europe/Berlin), revision `{plan[\'calver\'][\'sequence\']}`.\\n"\n             f"Electron version: `{plan[\'version\']}`; pacman: `{plan[\'pacmanVersion\']}-{plan[\'pacmanRelease\']}`.\\n\\n"')
+          replace(script, '    if not re.fullmatch(r"v\\d+\\.\\d+\\.\\d+-felix\\.\\d+\\.\\d+", plan["tag"]):\n        raise ValueError("Invalid release tag")', '    validate_plan_version(plan)')
+          tests = '.github/downstream/test_downstream.py'
+          replace(tests, 'self.assertEqual(cfg["publish"][0]["owner"], "felixfoertsch")', 'self.assertEqual(cfg["publish"][0]["url"], d.FEED_URL)\n        self.assertEqual(cfg["publish"][0]["provider"], "generic")')
+          replace(tests, '    def test_server_rejection_is_atomic(self):\n        self.plan(self.upstream())', '    def test_server_rejection_is_atomic(self):\n        plan = self.plan(self.upstream())')
+          replace(tests, 'd.remote_sha(self.repo, "refs/tags/v2.0.0-felix.12345.1", False)', 'd.remote_sha(self.repo, f"refs/tags/{plan[\'tag\']}", False)')
+          replace(tests, '    def test_existing_destination_rejected(self):', '    def test_bootstrap_flag_cannot_authorize_an_arbitrary_rewind(self):\n        with self.assertRaisesRegex(ValueError, "rewind"):\n            d.replay(self.repo, self.source, self.a, self.b, self.base, bootstrap=True)\n\n    def test_existing_destination_rejected(self):')
+          workflow = '.github/workflows/downstream.yml'
+          replace(workflow, 'branches: [main, build/downstream-preview]', 'branches: [main, build/downstream-preview, build/calver-preview]')
+          replace(workflow, "          grep -Fx 'owner: felixfoertsch' dist/linux-unpacked/resources/app-update.yml\n          grep -Fx 'repo: HeroicGamesLauncher' dist/linux-unpacked/resources/app-update.yml", "          grep -Fx 'provider: generic' dist/linux-unpacked/resources/app-update.yml\n          grep -Fx 'url: https://github.com/felixfoertsch/HeroicGamesLauncher/releases/download/downstream-feed' dist/linux-unpacked/resources/app-update.yml\n          grep -Fx 'channel: latest' dist/linux-unpacked/resources/app-update.yml")
+          replace(workflow, '          cp dist/*.AppImage dist/*.tar.xz dist/*-linux.yml "$RUNNER_TEMP/release/"', '          cp dist/*.AppImage dist/*.tar.xz dist/*-linux.yml "$RUNNER_TEMP/release/"\n          python3 ../control/.github/downstream/calver.py "$RUNNER_TEMP/release"')
+          replace(workflow, '              pacman -Qip ./*.pkg.tar.zst\n', '              pacman -Qip ./*.pkg.tar.zst\n              test "$(vercmp 2.22.1_2026.09.06.10 2.22.1_2026.09.06.9)" -gt 0\n              test "$(vercmp 2.22.2_2026.09.06.1 2.22.1_2026.12.31.99)" -gt 0\n')
+          doc = 'doc/downstream.md'
+          replace(doc, 'The initial baseline `e95e407a` is seven commits newer than stable `v2.22.1`.\nIt is retained to avoid downgrading the version already tested. Later stable\nreleases are eligible when they contain that baseline. Development commits,\nprereleases, unrelated histories and backwards release moves are not adopted.', 'The first CalVer run replays our local series from the initial development\nbaseline `e95e407a` onto the actual stable `v2.22.1` commit `2cc01fe4`. This\none-time, exactly pinned bootstrap removes seven unrelated development commits\nand is fully validated before promotion. After that, only forward stable\nupstream releases are adopted; arbitrary rewinds and divergent histories stop.')
+          replace(doc, '## One-time package signing setup', '## CalVer versions and AppImage updates\n\nPublic release tags preserve the upstream tag and use Europe/Berlin dates:\n\n```text\nv2.22.1-2026.09.06.1\nv2.22.1-2026.09.06.2\nv2.22.2-2026.09.07.1\n```\n\n`n` starts at 1 per upstream-tag/date pair and is one above the highest existing\nremote tag in that pair. A failed publication may reserve a number; gaps are\nallowed, but versioned tags and assets are never overwritten. Build runs remain\nserialized. The date is determined when a candidate is prepared.\n\nElectron requires valid SemVer, so its internal version is\n`2.22.1-2026.9.6.1` (numeric prerelease identifiers cannot have leading zeros).\nPacman uses `2.22.1_2026.09.06.1-1` because pkgver cannot contain a hyphen; the\nlast `-1` is the Arch package release. Public release tags and archive filenames\nretain the requested padded CalVer spelling. Generated `build-info.json` records\nall forms; it is not a feature-selection manifest.\n\nInstall the first CalVer AppImage manually when switching from the earlier\n`2.22.1-felix.<run-id>.<attempt>` scheme: those versions do not sort before the\nnew numeric prerelease under SemVer. New AppImages use a generic feed at\n`https://github.com/felixfoertsch/HeroicGamesLauncher/releases/download/downstream-feed`.\nIts `latest-linux.yml` names an exact versioned AppImage and its SHA512 hash. It\nis updated only after the complete CalVer release is public. This avoids trying\nto parse padded public tags as SemVer and never selects official unpatched\nHeroic releases. Heroic still prompts before installing updates.\n\n`downstream-feed` and `pacman` are rolling metadata releases, not application\nversions. Neither replaces immutable CalVer releases. Source archives contain\nthe exact tagged source; the separate `packaging.json` and build information\nrecord the generated version/feed settings used by electron-builder.\n\n## One-time package signing setup')
+      - name: Test the integrated CalVer and existing replay/publication behavior
+        run: |
+          python3 -m unittest discover -s .github/downstream -p 'test_*.py'
+          bash -n .github/downstream/publish.sh
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/formatter" prettier@3.7.4
+          node "$RUNNER_TEMP/formatter/node_modules/prettier/bin/prettier.cjs" --write .github/workflows/downstream.yml doc/downstream.md
+          git diff --check
+      - name: Store only production files as a reviewable child of current main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          paths = ['.github/downstream/calver.py', '.github/downstream/test_calver.py',
+                   '.github/downstream/downstream.py', '.github/downstream/test_downstream.py',
+                   '.github/downstream/publish.sh', '.github/workflows/downstream.yml', 'doc/downstream.md']
+          entries = [{'path': p, 'mode': '100644', 'type': 'blob', 'content': Path(p).read_text()} for p in paths]
+          Path('/tmp/tree.json').write_text(json.dumps({'base_tree': '8fcc4b3b4d83cd5080e14ebb1b3f3dde9ad31d79', 'tree': entries}))
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/trees" --input /tmp/tree.json > /tmp/tree-result.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          tree = json.loads(Path('/tmp/tree-result.json').read_text())['sha']
+          data = {'tree': tree, 'parents': ['88ea8eb163cd71009d99e0a2222a99c3baa27a20'],
+                  'message': 'ci: Version downstream releases with upstream-tag CalVer\n\nUse upstream-tag-YYYY.MM.DD.n with Europe/Berlin dates and a numeric counter derived from reserved remote tags. Preserve padded public tags, map internal Electron/pacman versions, and use a generic AppImage feed with exact immutable version URLs.\n\nKeep the landed linear replay and signed native Arch packaging pipeline. Perform one explicitly pinned bootstrap from the development baseline onto the actual stable release; arbitrary rewinds remain forbidden. Preserve independent drafts and original release assets.\n\nAI-assisted-by: Astra (OpenAI)\nRequested-by: Felix Förtsch'}
+          Path('/tmp/commit.json').write_text(json.dumps(data))
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input /tmp/commit.json --jq .sha | tee /tmp/calver-sha
+          printf 'CalVer candidate (no branches moved): `%s`\n' "$(cat /tmp/calver-sha)" >> "$GITHUB_STEP_SUMMARY"
