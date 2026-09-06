@@ -65,6 +65,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: heroic-custom/pnpm-lock.yaml
       - name: Install dependencies and helper binaries
+        id: dependencies
         working-directory: heroic-custom
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
@@ -80,10 +81,43 @@ jobs:
         run: pnpm test --runInBand
       - name: Lint the combined source
         working-directory: heroic-custom
-        run: pnpm lint
-      - name: Check formatting of the combined source
+        run: |
+          if pnpm lint > "$RUNNER_TEMP/heroic-lint.log" 2>&1; then
+            tail -n 4 "$RUNNER_TEMP/heroic-lint.log"
+          else
+            # Keep the full report as an artifact; highlight blocking errors here.
+            pnpm exec eslint --quiet .
+            exit 1
+          fi
+      - name: Check formatting of the combined source and recipe
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         working-directory: heroic-custom
-        run: pnpm prettier
+        run: |
+          status=0
+          pnpm prettier || status=1
+          pnpm exec prettier --check "../recipe/.github/scripts/custom-build/*.mjs" || status=1
+          if ((status)); then
+            # Report the exact formatter patch, without accepting changes in CI.
+            pnpm exec prettier --write . > /dev/null
+            pnpm exec prettier --write "../recipe/.github/scripts/custom-build/*.mjs" > /dev/null
+            git diff > "$RUNNER_TEMP/heroic-source-format.patch"
+            git -C ../recipe diff > "$RUNNER_TEMP/heroic-recipe-format.patch"
+            cat "$RUNNER_TEMP/heroic-source-format.patch" "$RUNNER_TEMP/heroic-recipe-format.patch"
+            git restore --worktree -- .
+            git -C ../recipe restore --worktree -- .github/scripts/custom-build
+            exit 1
+          fi
+      - name: Retain failed-check diagnostics
+        if: ${{ failure() && steps.dependencies.outcome == 'success' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: heroic-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/heroic-lint.log
+            ${{ runner.temp }}/heroic-source-format.patch
+            ${{ runner.temp }}/heroic-recipe-format.patch
+          if-no-files-found: warn
+          retention-days: 7
       - name: Build custom Linux x64 packages without publishing
         working-directory: heroic-custom
         run: |
