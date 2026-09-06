@@ -4,85 +4,95 @@ import {
   NileRegisterData,
   NileUserData
 } from 'common/types/nile'
+import { parseNileLoginData, parseNileUserData } from 'common/nileAuth'
 import { libraryManagerMap } from '..'
 import { existsSync, readFileSync } from 'graceful-fs'
 import { configStore } from './electronStores'
 import { clearCache } from 'backend/utils'
-import { nileUserData } from './constants'
+import { nileConfigPath, nileUserData } from './constants'
 import { session } from 'electron'
+import { join } from 'path'
 
-function authLogSanitizer(line: string) {
-  try {
-    const output = JSON.parse(line)
-    output.url = '<redacted>'
-    output.code_verifier = '<redacted>'
-    output.serial = '<redacted>'
-    output.client_id = '<redacted>'
-    return JSON.stringify(output) + '\n'
-  } catch {
-    return line
-  }
+function authLogSanitizer() {
+  // Output can contain authorization codes, PKCE verifiers and bearer tokens,
+  // including partial JSON chunks that cannot be safely parsed for redaction.
+  return '<redacted Nile authentication output>\n'
 }
 
 export class NileUser {
   static async getLoginData(): Promise<NileLoginData> {
+    // Nile refuses `auth --login` when a session already exists. Heroic's
+    // electron-store cache may have been cleared independently of that session.
+    const existingUser = this.getUserData()
+    if (existingUser) return { user: existingUser }
+
     logDebug('Getting login data from Nile', LogPrefix.Nile)
-    const { stdout } = await libraryManagerMap['nile'].runRunnerCommand(
+    const result = await libraryManagerMap['nile'].runRunnerCommand(
       ['auth', '--login', '--non-interactive'],
       {
         abortId: 'nile-auth',
         logSanitizer: authLogSanitizer
       }
     )
-    const output: NileLoginData = JSON.parse(stdout)
+    if (result.abort || result.error) {
+      throw new Error('Could not prepare Amazon login')
+    }
 
-    logInfo(['Register data is:', output], LogPrefix.Nile)
-    return output
+    const output = parseNileLoginData(result.stdout)
+    if (output) return output
+
+    // Starting Nile can migrate a legacy session to current_user.json.
+    const migratedUser = this.getUserData()
+    if (migratedUser) return { user: migratedUser }
+
+    logError('Nile did not return valid Amazon login data', LogPrefix.Nile)
+    throw new Error('Could not prepare Amazon login')
   }
 
   static async login(
     data: NileRegisterData
   ): Promise<{ status: 'done' | 'failed'; user: NileUserData | undefined }> {
-    logDebug(['Got register data:', data], LogPrefix.Nile)
+    const failed = { status: 'failed' as const, user: undefined }
     const { code, code_verifier, serial, client_id } = data
-    // Nile prints output to stderr
-    const { stderr: output } = await libraryManagerMap['nile'].runRunnerCommand(
-      [
-        'register',
-        '--code',
-        code,
-        '--code-verifier',
-        code_verifier,
-        '--serial',
-        serial,
-        '--client-id',
-        client_id
-      ],
-      { abortId: 'nile-login' }
-    )
-
-    const successRegex = /\[AUTH_MANAGER]:.*Succesfully registered a device/
-    if (!successRegex.test(output)) {
-      // Authentication failed
-      logError(['Authentication failed:', output], LogPrefix.Nile)
-      return {
-        status: 'failed',
-        user: undefined
-      }
+    if (
+      ![code, code_verifier, serial, client_id].every(
+        (value) => typeof value === 'string' && value.trim().length > 0
+      )
+    ) {
+      return failed
     }
 
-    logInfo('Authentication successful', LogPrefix.Nile)
-    const user = await this.getUserData()
-    if (!user) {
-      return {
-        status: 'failed',
-        user: undefined
-      }
-    }
+    try {
+      const result = await libraryManagerMap['nile'].runRunnerCommand(
+        [
+          'register',
+          '--code',
+          code,
+          '--code-verifier',
+          code_verifier,
+          '--serial',
+          serial,
+          '--client-id',
+          client_id
+        ],
+        { abortId: 'nile-login', logSanitizer: authLogSanitizer }
+      )
+      if (result.abort || result.error) return failed
 
-    return {
-      status: 'done',
-      user
+      // Human-readable log messages are not an authentication API. A valid
+      // profile written by Nile is required, even when its output says success.
+      const user = this.getUserData()
+      if (!user) {
+        logError('Nile did not save an Amazon user profile', LogPrefix.Nile)
+        return failed
+      }
+
+      logInfo('Authentication successful', LogPrefix.Nile)
+      return { status: 'done', user }
+    } catch {
+      // Helper errors can embed command arguments or token-bearing output.
+      logError('Amazon authentication failed', LogPrefix.Nile)
+      return failed
     }
   }
 
@@ -93,8 +103,8 @@ export class NileUser {
       abortId: 'nile-logout'
     })
 
-    if (res.abort) {
-      logError('Failed to logout: abort by user', LogPrefix.Nile)
+    if (res.abort || res.error) {
+      logError('Failed to logout from Amazon', LogPrefix.Nile)
       return
     }
 
@@ -106,27 +116,37 @@ export class NileUser {
     ses.clearAuthCache().catch(() => {})
   }
 
-  static async getUserData(): Promise<NileUserData | undefined> {
-    if (!existsSync(nileUserData)) {
-      logError('user.json does not exist', LogPrefix.Nile)
+  static getUserData(): NileUserData | undefined {
+    // Nile < 1.2 stores customer_info in user.json. Newer Nile stores only the
+    // public profile in current_user.json; it is authoritative when present.
+    const legacy = !existsSync(nileUserData)
+    const path = legacy ? join(nileConfigPath, 'user.json') : nileUserData
+    if (!existsSync(path)) {
       configStore.delete('userData')
       return
     }
 
-    const user: NileUserData = JSON.parse(readFileSync(nileUserData, 'utf-8'))
-    if (!Object.keys(user).length) {
-      logInfo('user.json is empty', LogPrefix.Nile)
-      configStore.delete('userData')
-      return
+    try {
+      const user = parseNileUserData(
+        JSON.parse(readFileSync(path, 'utf-8')),
+        legacy
+      )
+      if (user) {
+        configStore.set('userData', user)
+        return user
+      }
+    } catch {
+      // A damaged profile should not crash startup or leak its contents.
+      logError('Could not read the Nile user profile', LogPrefix.Nile)
     }
 
-    configStore.set('userData', user)
-    logInfo('Saved user data to config file', LogPrefix.Nile)
-
-    return user
+    configStore.delete('userData')
+    return
   }
 
   public static isLoggedIn() {
-    return configStore.get_nodefault('userData') || false
+    // Rehydrate the cache before the initial library refresh, including when
+    // the user authenticated with the CLI in Heroic's NILE_CONFIG_PATH.
+    return this.getUserData() || false
   }
 }
