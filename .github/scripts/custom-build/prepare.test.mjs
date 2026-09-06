@@ -163,7 +163,10 @@ test('rejects invalid refs, modes and repository names before building', (t) => 
     'refs/remotes/origin/main'
   ]) {
     assert.throws(() =>
-      validateManifest(f.repo, { base: f.base, features: [{ name: 'Bad', ref }] })
+      validateManifest(f.repo, {
+        base: f.base,
+        features: [{ name: 'Bad', ref }]
+      })
     )
   }
   assert.throws(
@@ -193,7 +196,9 @@ test('bundle restores the exact source commit into a separate checkout', (t) => 
   const f = fixture(t)
   const result = prepareBuild(f.options)
   const clone = join(f.root, 'publish-checkout')
-  execFileSync('git', ['clone', '--no-local', f.repo, clone], { stdio: 'ignore' })
+  execFileSync('git', ['clone', '--no-local', f.repo, clone], {
+    stdio: 'ignore'
+  })
   const bundle = join(f.options.artifacts, 'source.bundle')
   git(clone, 'bundle', 'verify', bundle)
   git(clone, 'fetch', bundle, `${result.bundleRef}:refs/heads/publish-source`)

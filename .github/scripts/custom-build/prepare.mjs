@@ -28,7 +28,9 @@ function git(repo, ...args) {
 
 function normalizeRef(repo, value) {
   if (typeof value !== 'string' || !value || value.startsWith('-')) {
-    throw new Error('Each source must specify a branch, tag, or full commit SHA')
+    throw new Error(
+      'Each source must specify a branch, tag, or full commit SHA'
+    )
   }
   if (/^[a-f0-9]{40}$/i.test(value)) return value.toLowerCase()
   const ref = value.startsWith('refs/') ? value : `refs/heads/${value}`
