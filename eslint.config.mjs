@@ -78,6 +78,14 @@ export default tseslint.config(
     }
   },
   {
+    ...tseslint.configs.disableTypeChecked,
+    files: ['.github/downstream/**/*.mjs'],
+    languageOptions: {
+      globals: { process: 'readonly', console: 'readonly', URL: 'readonly' },
+      parserOptions: { project: false, projectService: false }
+    }
+  },
+  {
     ignores: ['build/', '**/*.js', 'eslint.config.mjs', '.github/scripts/']
   }
 )
