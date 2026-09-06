@@ -1,0 +1,66 @@
+name: Export validated CalVer source
+on:
+  push:
+    branches: [build/calver-export]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 8153c1c55f7fc3bbb903bad1e358be3753e54f5b
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Apply the already reviewed, pinned integration instructions
+        shell: python
+        run: |
+          from pathlib import Path
+          lines = Path('.github/workflows/calver-preparation.yml').read_text().splitlines()
+          marker = '      - name: Apply the reviewed CalVer integration to the existing pipeline'
+          start = lines.index(marker)
+          assert lines[start + 1] == '        shell: python'
+          assert lines[start + 2] == '        run: |'
+          body = []
+          for line in lines[start + 3:]:
+              if not line.startswith('          ') and line.strip():
+                  break
+              body.append(line[10:])
+          exec(compile('\n'.join(body), 'reviewed-calver-integration', 'exec'))
+      - name: Validate and format the integration
+        run: |
+          python3 -m unittest discover -s .github/downstream -p 'test_*.py'
+          bash -n .github/downstream/publish.sh
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/formatter" prettier@3.7.4
+          node "$RUNNER_TEMP/formatter/node_modules/prettier/bin/prettier.cjs" --write .github/workflows/downstream.yml doc/downstream.md
+          git diff --check
+      - name: Export source tree and workflow blob without changing refs or workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          paths = ['.github/downstream/calver.py', '.github/downstream/test_calver.py',
+                   '.github/downstream/downstream.py', '.github/downstream/test_downstream.py',
+                   '.github/downstream/publish.sh', 'doc/downstream.md']
+          entries = [{'path': p, 'mode': '100644', 'type': 'blob', 'content': Path(p).read_text()} for p in paths]
+          Path('/tmp/tree.json').write_text(json.dumps({'base_tree': '8fcc4b3b4d83cd5080e14ebb1b3f3dde9ad31d79', 'tree': entries}))
+          Path('/tmp/blob.json').write_text(json.dumps({'encoding': 'utf-8', 'content': Path('.github/workflows/downstream.yml').read_text()}))
+          PY
+          printf 'VALIDATED_SOURCE_TREE='
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/trees" --input /tmp/tree.json --jq .sha
+          printf 'VALIDATED_WORKFLOW_BLOB='
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/blobs" --input /tmp/blob.json --jq .sha
