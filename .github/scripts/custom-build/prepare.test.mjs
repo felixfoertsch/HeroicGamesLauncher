@@ -74,16 +74,26 @@ function fixture(t) {
 test('assembles both branches and preserves the original main branch', (t) => {
   const f = fixture(t)
   const result = prepareBuild(f.options)
-  assert.equal(readFileSync(join(result.source, 'stack.txt'), 'utf8'), 'stacked\n')
+  assert.equal(
+    readFileSync(join(result.source, 'stack.txt'), 'utf8'),
+    'stacked\n'
+  )
   assert.equal(readFileSync(join(result.source, 'nile.txt'), 'utf8'), 'nile\n')
   assert.equal(git(f.repo, 'rev-parse', 'main'), f.base)
   assert.equal(git(f.repo, 'symbolic-ref', '--short', 'HEAD'), 'main')
   assert.equal(result.version, '2.22.1-felix.123.1')
   assert.equal(git(result.source, 'status', '--porcelain'), '')
-  const info = JSON.parse(readFileSync(join(f.options.artifacts, 'build-manifest.json')))
-  assert.deepEqual(info.features.map(({ sha }) => sha), [f.stacked, f.nile])
+  const info = JSON.parse(
+    readFileSync(join(f.options.artifacts, 'build-manifest.json'))
+  )
+  assert.deepEqual(
+    info.features.map(({ sha }) => sha),
+    [f.stacked, f.nile]
+  )
   assert.equal(info.sourceSha, git(result.source, 'rev-parse', 'HEAD'))
-  const config = JSON.parse(readFileSync(join(result.source, 'electron-builder.custom.json')))
+  const config = JSON.parse(
+    readFileSync(join(result.source, 'electron-builder.custom.json'))
+  )
   assert.equal(config.publish[0].owner, 'test')
   assert.equal(config.publish[0].repo, 'heroic')
 })
@@ -104,7 +114,9 @@ test('cherry-picks one commit rather than bringing its whole branch', (t) => {
   git(f.repo, 'commit', '-m', 'Single independent change')
   const single = git(f.repo, 'rev-parse', 'HEAD')
   git(f.repo, 'checkout', 'main')
-  f.options.manifest.features = [{ name: 'Single', ref: single, mode: 'cherry-pick' }]
+  f.options.manifest.features = [
+    { name: 'Single', ref: single, mode: 'cherry-pick' }
+  ]
   const result = prepareBuild(f.options)
   assert(existsSync(join(result.source, 'single.txt')))
   assert(!existsSync(join(result.source, 'stack.txt')))
@@ -125,28 +137,55 @@ test('stops on conflicts without publishing artifacts or changing main', (t) => 
 
 test('refuses an empty feature list and duplicate refs', (t) => {
   const f = fixture(t)
-  assert.throws(() => validateManifest(f.repo, { base: f.base, features: [] }), /at least one/)
-  assert.throws(() => validateManifest(f.repo, {
-    base: f.base,
-    features: [{ name: 'A', ref: f.stacked }, { name: 'B', ref: f.stacked }]
-  }), /Duplicate/)
+  assert.throws(
+    () => validateManifest(f.repo, { base: f.base, features: [] }),
+    /at least one/
+  )
+  assert.throws(
+    () =>
+      validateManifest(f.repo, {
+        base: f.base,
+        features: [
+          { name: 'A', ref: f.stacked },
+          { name: 'B', ref: f.stacked }
+        ]
+      }),
+    /Duplicate/
+  )
 })
 
 test('rejects invalid refs, modes and repository names before building', (t) => {
   const f = fixture(t)
-  for (const ref of ['--upload-pack=bad', 'https://evil.example/repo', 'main\nmalicious', 'refs/remotes/origin/main']) {
-    assert.throws(() => validateManifest(f.repo, { base: f.base, features: [{ name: 'Bad', ref }] }))
+  for (const ref of [
+    '--upload-pack=bad',
+    'https://evil.example/repo',
+    'main\nmalicious',
+    'refs/remotes/origin/main'
+  ]) {
+    assert.throws(() =>
+      validateManifest(f.repo, { base: f.base, features: [{ name: 'Bad', ref }] })
+    )
   }
-  assert.throws(() => validateManifest(f.repo, {
-    base: f.base,
-    features: [{ name: 'Bad', ref: f.stacked, mode: 'force' }]
-  }), /Unsupported integration/)
-  assert.throws(() => prepareBuild({ ...f.options, repository: '../other' }), /owner\/name/)
+  assert.throws(
+    () =>
+      validateManifest(f.repo, {
+        base: f.base,
+        features: [{ name: 'Bad', ref: f.stacked, mode: 'force' }]
+      }),
+    /Unsupported integration/
+  )
+  assert.throws(
+    () => prepareBuild({ ...f.options, repository: '../other' }),
+    /owner\/name/
+  )
 })
 
 test('refuses to overwrite an existing source directory', (t) => {
   const f = fixture(t)
-  assert.throws(() => prepareBuild({ ...f.options, source: f.repo }), /must not already exist/)
+  assert.throws(
+    () => prepareBuild({ ...f.options, source: f.repo }),
+    /must not already exist/
+  )
   assert.equal(git(f.repo, 'rev-parse', 'main'), f.base)
 })
 
@@ -159,7 +198,14 @@ test('bundle restores the exact source commit into a separate checkout', (t) => 
   git(clone, 'bundle', 'verify', bundle)
   git(clone, 'fetch', bundle, `${result.bundleRef}:refs/heads/publish-source`)
   assert.equal(git(clone, 'rev-parse', 'publish-source'), result.sourceSha)
-  const archived = execFileSync('tar', ['-tzf', join(f.options.artifacts, `Heroic-${result.version}-source.tar.gz`)], { encoding: 'utf8' })
+  const archived = execFileSync(
+    'tar',
+    [
+      '-tzf',
+      join(f.options.artifacts, `Heroic-${result.version}-source.tar.gz`)
+    ],
+    { encoding: 'utf8' }
+  )
   assert(archived.includes('heroic-custom/stack.txt'))
   assert(archived.includes('heroic-custom/nile.txt'))
   assert(archived.includes('heroic-custom/custom-build-locked.json'))
@@ -168,8 +214,12 @@ test('bundle restores the exact source commit into a separate checkout', (t) => 
 test('locked inputs reproduce the feature tree after a branch advances', (t) => {
   const f = fixture(t)
   const first = prepareBuild(f.options)
-  const locked = JSON.parse(readFileSync(join(first.source, 'custom-build-locked.json')))
-  const firstInfo = JSON.parse(readFileSync(join(f.options.artifacts, 'build-manifest.json')))
+  const locked = JSON.parse(
+    readFileSync(join(first.source, 'custom-build-locked.json'))
+  )
+  const firstInfo = JSON.parse(
+    readFileSync(join(f.options.artifacts, 'build-manifest.json'))
+  )
   git(f.repo, 'checkout', 'feat/stack')
   writeFileSync(join(f.repo, 'later.txt'), 'not in the pinned build\n')
   git(f.repo, 'add', 'later.txt')
@@ -184,6 +234,8 @@ test('locked inputs reproduce the feature tree after a branch advances', (t) => 
     buildId: '123.2'
   })
   assert(!existsSync(join(replay.source, 'later.txt')))
-  const replayInfo = JSON.parse(readFileSync(join(artifacts, 'build-manifest.json')))
+  const replayInfo = JSON.parse(
+    readFileSync(join(artifacts, 'build-manifest.json'))
+  )
   assert.equal(replayInfo.integratedTree, firstInfo.integratedTree)
 })

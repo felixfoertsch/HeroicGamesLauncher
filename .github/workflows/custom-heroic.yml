@@ -47,7 +47,7 @@ jobs:
         run: |
           node recipe/.github/scripts/custom-build/prepare.mjs \
             --repo recipe \
-            --source "$RUNNER_TEMP/heroic-custom" \
+            --source "$GITHUB_WORKSPACE/heroic-custom" \
             --artifacts "$RUNNER_TEMP/heroic-artifacts" \
             --manifest recipe/.github/custom-build.json \
             --repository "$GITHUB_REPOSITORY" \
@@ -55,31 +55,37 @@ jobs:
       - name: Set up the pnpm version selected by the assembled source
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          package_json_file: ${{ runner.temp }}/heroic-custom/package.json
+          # This action resolves package_json_file relative to GITHUB_WORKSPACE.
+          package_json_file: heroic-custom/package.json
           run_install: false
       - name: Cache locked dependencies
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
           cache: pnpm
-          cache-dependency-path: ${{ runner.temp }}/heroic-custom/pnpm-lock.yaml
+          cache-dependency-path: heroic-custom/pnpm-lock.yaml
       - name: Install dependencies and helper binaries
-        working-directory: ${{ runner.temp }}/heroic-custom
+        working-directory: heroic-custom
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: |
           pnpm install --frozen-lockfile
           pnpm exec install-electron
           pnpm download-helper-binaries
-      - name: Type-check, test, lint and check formatting on the combined source
-        working-directory: ${{ runner.temp }}/heroic-custom
-        run: |
-          pnpm codecheck
-          pnpm test --runInBand
-          pnpm lint
-          pnpm prettier
+      - name: Type-check the combined source
+        working-directory: heroic-custom
+        run: pnpm codecheck
+      - name: Test the combined source
+        working-directory: heroic-custom
+        run: pnpm test --runInBand
+      - name: Lint the combined source
+        working-directory: heroic-custom
+        run: pnpm lint
+      - name: Check formatting of the combined source
+        working-directory: heroic-custom
+        run: pnpm prettier
       - name: Build custom Linux x64 packages without publishing
-        working-directory: ${{ runner.temp }}/heroic-custom
+        working-directory: heroic-custom
         run: |
           pnpm exec electron-vite build
           pnpm exec electron-builder --config electron-builder.custom.json \
@@ -87,7 +93,7 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
       - name: Collect packages and checksums
-        working-directory: ${{ runner.temp }}/heroic-custom
+        working-directory: heroic-custom
         shell: bash
         run: |
           set -euo pipefail

@@ -234,7 +234,10 @@ export function prepareBuild({
     `# Heroic ${version}\n\nUnofficial Linux x64 custom build.\n\n` +
       `Base: \`${baseSha}\`\n\n` +
       features
-        .map(({ name, ref, sha, mode }) => `- ${name}: \`${ref}\` → \`${sha}\` (${mode})`)
+        .map(
+          ({ name, ref, sha, mode }) =>
+            `- ${name}: \`${ref}\` → \`${sha}\` (${mode})`
+        )
         .join('\n') +
       `\n\nSource commit: \`${sourceSha}\`\n\n` +
       'Published only after combined-source TypeScript, Jest, lint and formatting checks pass.\n' +
@@ -246,7 +249,10 @@ export function prepareBuild({
   return { source, sourceSha, bundleRef, version, tag: `v${version}` }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
   const { values } = parseArgs({
     options: Object.fromEntries(
       ['repo', 'source', 'artifacts', 'manifest', 'repository', 'build-id'].map(
@@ -255,7 +261,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     )
   })
   try {
-    for (const name of ['repo', 'source', 'artifacts', 'manifest', 'repository', 'build-id']) {
+    for (const name of [
+      'repo',
+      'source',
+      'artifacts',
+      'manifest',
+      'repository',
+      'build-id'
+    ]) {
       if (!values[name]) throw new Error(`Missing --${name}`)
     }
     const result = prepareBuild({
