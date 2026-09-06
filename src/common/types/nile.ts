@@ -106,12 +106,15 @@ export interface NileUserData {
   name: string
 }
 
-export interface NileLoginData {
+export interface NileLoginUrl {
   url: string
   code_verifier: string
   serial: string
   client_id: string
 }
+
+// Login preparation can discover a session already authenticated by Nile.
+export type NileLoginData = NileLoginUrl | { user: NileUserData }
 
 export interface NileRegisterData {
   code: string
