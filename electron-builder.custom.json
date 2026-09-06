@@ -1,0 +1,14 @@
+{
+  "extends": "./electron-builder.yml",
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "felixfoertsch",
+      "repo": "HeroicGamesLauncher",
+      "releaseType": "prerelease"
+    }
+  ],
+  "linux": {
+    "artifactName": "Heroic-${version}-custom-${arch}.${ext}"
+  }
+}

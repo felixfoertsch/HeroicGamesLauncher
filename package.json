@@ -1,6 +1,6 @@
 {
   "name": "heroic",
-  "version": "2.22.1",
+  "version": "2.22.1-felix.34039211504.1",
   "versionNames": {
     "stable": "Hajrudin",
     "beta": "Caesar Clown"
@@ -11,8 +11,8 @@
   "license": "GPL-3.0-only",
   "description": "An Open Source Launcher for GOG, Epic Games and Amazon Games",
   "repository": {
-    "type": "Github",
-    "url": "https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher"
+    "type": "git",
+    "url": "https://github.com/felixfoertsch/HeroicGamesLauncher"
   },
   "author": {
     "name": "Heroic Games Launcher",

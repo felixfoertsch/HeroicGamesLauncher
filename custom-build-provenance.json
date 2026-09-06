@@ -1,0 +1,28 @@
+{
+  "repository": "felixfoertsch/HeroicGamesLauncher",
+  "recipeSha": "2ab910d1fae3a387c1940742d9b16065a14beb61",
+  "base": {
+    "ref": "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb",
+    "sha": "e95e407a5340b4c3993fcc8fb8c4d3faeec9bcfb"
+  },
+  "features": [
+    {
+      "name": "Stacked game copies",
+      "ref": "refs/heads/feat/stack-game-copies",
+      "mode": "merge",
+      "sha": "072b591abf46d0a56320bc707239a3eb9205b347"
+    },
+    {
+      "name": "Amazon / Nile login recovery",
+      "ref": "refs/heads/fix/nile-amazon-login",
+      "mode": "merge",
+      "sha": "32b17ffa3a9a99acaaf9604abf6991c5c1e87b6f"
+    }
+  ],
+  "integratedSha": "b614d1ac714cae8bbd7a2659902da7c79b1a64e7",
+  "integratedTree": "5de176ddc764adad811cf6fa5cfe72c9174f2509",
+  "version": "2.22.1-felix.34039211504.1",
+  "platform": "linux",
+  "arch": "x64",
+  "packageManager": "pnpm@10.28.0"
+}
