@@ -1,5 +1,10 @@
-import React, { useContext, useEffect, useRef } from 'react'
+import React, { useContext, useEffect, useMemo, useRef } from 'react'
 import { GameInfo, Runner } from 'common/types'
+import {
+  getGameIdentity,
+  getGameStackRepresentative,
+  groupGameCopies
+} from 'common/gameStack'
 import cx from 'classnames'
 import GameCard from '../GameCard'
 import ContextProvider from 'frontend/state/ContextProvider'
@@ -49,14 +54,47 @@ const GamesList = ({
   isRecent = false,
   isFavourite = false
 }: Props): JSX.Element => {
-  const { gameUpdates, allTilesInColor, titlesAlwaysVisible } =
-    useContext(ContextProvider)
+  const {
+    gameUpdates,
+    allTilesInColor,
+    titlesAlwaysVisible,
+    libraryStatus,
+    activeController
+  } = useContext(ContextProvider)
   const { t } = useTranslation()
   const listRef = useRef<HTMLDivElement | null>(null)
-  const { activeController } = useContext(ContextProvider)
+
+  const cards = useMemo(() => {
+    const activeGames = new Set(
+      libraryStatus
+        .filter(({ status }) =>
+          [
+            'playing',
+            'launching',
+            'installing',
+            'updating',
+            'uninstalling',
+            'queued',
+            'syncing-saves',
+            'repairing',
+            'verifying',
+            'winetricks',
+            'redist'
+          ].includes(status)
+        )
+        .map(({ appName, runner }) =>
+          getGameIdentity({ app_name: appName, runner })
+        )
+    )
+
+    return groupGameCopies(library, onlyInstalled).flatMap((copies) => {
+      const gameInfo = getGameStackRepresentative(copies, activeGames)
+      return gameInfo ? [{ gameInfo, copies }] : []
+    })
+  }, [library, onlyInstalled, libraryStatus])
 
   useEffect(() => {
-    if (library.length) {
+    if (cards.length) {
       const options = {
         rootMargin: '500px',
         threshold: 0
@@ -86,7 +124,7 @@ const GamesList = ({
 
       const observer = new IntersectionObserver(callback, options)
 
-      document.querySelectorAll('[data-invisible]').forEach((card) => {
+      listRef.current?.querySelectorAll('[data-invisible]').forEach((card) => {
         observer.observe(card)
       })
 
@@ -95,7 +133,7 @@ const GamesList = ({
       }
     }
     return () => ({})
-  }, [library])
+  }, [cards])
 
   useEffect(() => {
     if (listRef.current && activeController) {
@@ -115,7 +153,7 @@ const GamesList = ({
 
   return (
     <div
-      style={!library.length ? { backgroundColor: 'transparent' } : {}}
+      style={!cards.length ? { backgroundColor: 'transparent' } : {}}
       className={cx({
         gameList: layout === 'grid',
         gameListLayout: layout === 'list',
@@ -133,39 +171,29 @@ const GamesList = ({
           <span>{t('wine.actions', 'Action')}</span>
         </div>
       )}
-      {!!library.length &&
-        library.map((gameInfo, index) => {
-          const { app_name, is_installed, runner } = gameInfo
-          const isJustPlayed = (isFavourite || isRecent) && index === 0
-          let is_dlc = false
-          if (gameInfo.runner !== 'sideload') {
-            is_dlc = gameInfo.install.is_dlc ?? false
-          }
-
-          if (is_dlc) {
-            return null
-          }
-          if (!is_installed && onlyInstalled) {
-            return null
-          }
-
-          const hasUpdate = is_installed && gameUpdates?.includes(app_name)
-          return (
-            <GameCard
-              key={`${runner}_${app_name}${isFirstLane ? '_firstlane' : ''}`}
-              hasUpdate={hasUpdate}
-              buttonClick={() => {
-                if (gameInfo.runner !== 'sideload')
-                  handleGameCardClick(app_name, runner, gameInfo)
-              }}
-              forceCard={layout === 'grid'}
-              isRecent={isRecent}
-              gameInfo={gameInfo}
-              justPlayed={isJustPlayed}
-              dataTour={index === 0 ? 'library-game-card' : undefined}
-            />
-          )
-        })}
+      {cards.map(({ gameInfo, copies }, index) => {
+        const { app_name, is_installed, runner } = gameInfo
+        const isJustPlayed = (isFavourite || isRecent) && index === 0
+        const hasUpdate = Boolean(
+          is_installed && gameUpdates?.includes(app_name)
+        )
+        return (
+          <GameCard
+            key={getGameIdentity(gameInfo)}
+            hasUpdate={hasUpdate}
+            buttonClick={() => {
+              if (gameInfo.runner !== 'sideload')
+                handleGameCardClick(app_name, runner, gameInfo)
+            }}
+            forceCard={layout === 'grid'}
+            isRecent={isRecent}
+            gameInfo={gameInfo}
+            copies={copies}
+            justPlayed={isJustPlayed}
+            dataTour={index === 0 ? 'library-game-card' : undefined}
+          />
+        )
+      })}
     </div>
   )
 }
