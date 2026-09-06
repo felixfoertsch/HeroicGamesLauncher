@@ -29,4 +29,12 @@
   &:has(.UpdateComponent) .WebView__webview {
     display: none;
   }
+
+  .WebView__loginError {
+    padding: var(--space-lg);
+
+    button {
+      margin-inline-end: var(--space-sm);
+    }
+  }
 }
