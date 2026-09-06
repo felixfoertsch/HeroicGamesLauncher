@@ -82,9 +82,11 @@ const GamesList = ({
             'redist'
           ].includes(status)
         )
-        .map(({ appName, runner }) =>
-          getGameIdentity({ app_name: appName, runner })
-        )
+        .flatMap(({ appName, runner }) => {
+          // A status without a runner cannot identify a specific store copy.
+          if (!runner) return []
+          return [getGameIdentity({ app_name: appName, runner })]
+        })
     )
 
     return groupGameCopies(library, onlyInstalled).flatMap((copies) => {
