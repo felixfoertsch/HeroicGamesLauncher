@@ -1,0 +1,283 @@
+name: Downstream Heroic
+run-name: Downstream Heroic (${{ github.run_number }})
+
+on:
+  push:
+    branches: [main, build/downstream-preview]
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heroic-downstream
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  build:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      build: ${{ steps.prepare.outputs.build }}
+      candidate: ${{ steps.prepare.outputs.candidate }}
+    steps:
+      - name: Check out the exact control and source revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test patch replay and guarded promotion with real Git repositories
+        working-directory: control
+        run: python3 -m unittest discover -s .github/downstream -p 'test_*.py'
+      - name: Read the latest stable upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest > "$RUNNER_TEMP/upstream-release.json"
+      - name: Prepare main or replay it onto the new upstream release
+        id: prepare
+        env:
+          BUILD_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+          EVENT: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 control/.github/downstream/downstream.py prepare \
+            --repo control --source "$GITHUB_WORKSPACE/source" \
+            --output "$RUNNER_TEMP/release" --release "$RUNNER_TEMP/upstream-release.json" \
+            --build-id "$BUILD_ID" --event "$EVENT" 2>&1 | tee "$RUNNER_TEMP/prepare.log"
+      - name: Set up Node
+        if: steps.prepare.outputs.build == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Set up the source-selected pnpm version
+        if: steps.prepare.outputs.build == 'true'
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: source/package.json
+          run_install: false
+      - name: Cache locked dependencies
+        if: steps.prepare.outputs.build == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+      - name: Install dependencies and pinned helpers
+        if: steps.prepare.outputs.build == 'true'
+        id: dependencies
+        working-directory: source
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec install-electron
+          pnpm download-helper-binaries
+      - name: Type-check
+        if: steps.prepare.outputs.build == 'true'
+        working-directory: source
+        run: pnpm codecheck
+      - name: Unit tests
+        if: steps.prepare.outputs.build == 'true'
+        working-directory: source
+        run: pnpm test --runInBand
+      - name: Lint
+        if: steps.prepare.outputs.build == 'true'
+        working-directory: source
+        run: |
+          if pnpm lint > "$RUNNER_TEMP/lint.log" 2>&1; then
+            tail -n 4 "$RUNNER_TEMP/lint.log"
+          else
+            cat "$RUNNER_TEMP/lint.log"
+            exit 1
+          fi
+      - name: Check formatting and retain an actionable patch on failure
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        working-directory: source
+        run: |
+          if ! pnpm prettier; then
+            pnpm exec prettier --write . > /dev/null
+            git diff > "$RUNNER_TEMP/format.patch"
+            cat "$RUNNER_TEMP/format.patch"
+            exit 1
+          fi
+      - name: Build Linux AppImage and archive without publishing
+        if: steps.prepare.outputs.build == 'true'
+        working-directory: source
+        run: |
+          python3 ../control/.github/downstream/downstream.py packaging \
+            --source "$PWD" --output "$RUNNER_TEMP/release"
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --config "$RUNNER_TEMP/release/packaging.json" \
+            --linux AppImage tar.xz --x64 --publish never
+          grep -Fx 'owner: felixfoertsch' dist/linux-unpacked/resources/app-update.yml
+          grep -Fx 'repo: HeroicGamesLauncher' dist/linux-unpacked/resources/app-update.yml
+          git diff --exit-code
+          git diff --cached --exit-code
+          cp dist/*.AppImage dist/*.tar.xz dist/*-linux.yml "$RUNNER_TEMP/release/"
+      - name: Build and inspect the Arch package in the official Arch container
+        if: steps.prepare.outputs.build == 'true'
+        env:
+          DOWNSTREAM_PKGVER: ${{ steps.prepare.outputs.pacman_version }}
+          DOWNSTREAM_PKGREL: ${{ steps.prepare.outputs.pacman_release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull archlinux:base-devel
+          image=$(docker image inspect archlinux:base-devel --format '{{index .RepoDigests 0}}')
+          printf '%s\n' "$image" > "$RUNNER_TEMP/release/archlinux-image.txt"
+          mkdir "$RUNNER_TEMP/arch-package"
+          docker run --rm --network=none \
+            -e DOWNSTREAM_PKGVER -e DOWNSTREAM_PKGREL \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -v "$GITHUB_WORKSPACE/source/dist/linux-unpacked:/payload:ro" \
+            -v "$GITHUB_WORKSPACE/source:/recipe:ro" \
+            -v "$RUNNER_TEMP/arch-package:/work" "$image" bash -euc '
+              useradd -m builder
+              cp /recipe/.github/downstream/PKGBUILD /work/PKGBUILD
+              chown -R builder:builder /work
+              cd /work
+              runuser -u builder -- makepkg --nodeps --cleanbuild --clean --noconfirm
+              pacman -Qip ./*.pkg.tar.zst
+              chown -R "$HOST_UID:$HOST_GID" /work
+            '
+          cp "$RUNNER_TEMP/arch-package/"*.pkg.tar.zst "$RUNNER_TEMP/release/"
+      - name: Smoke-test a signed pacman repository with a disposable CI key
+        if: steps.prepare.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          test_assets=$(mktemp -d)
+          trap 'gpgconf --kill gpg-agent || true; rm -rf "$GNUPGHOME" "$test_assets"' EXIT
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key 'Heroic disposable CI key <ci@example.invalid>' ed25519 sign 1d
+          export PACMAN_SIGNING_KEY PACMAN_SIGNING_FINGERPRINT PACMAN_SIGNING_PASSPHRASE=''
+          PACMAN_SIGNING_KEY=$(gpg --batch --armor --export-secret-keys)
+          PACMAN_SIGNING_FINGERPRINT=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1=="fpr" { print $10; exit }')
+          cp "$RUNNER_TEMP/release/"*.pkg.tar.zst "$RUNNER_TEMP/release/archlinux-image.txt" "$test_assets/"
+          bash control/.github/downstream/sign.sh "$test_assets"
+          chmod 755 "$test_assets"
+          chmod a+r "$test_assets/"*
+          image=$(cat "$test_assets/archlinux-image.txt")
+          docker run --rm --network=none -e PACMAN_SIGNING_FINGERPRINT \
+            -v "$test_assets:/repo:ro" "$image" bash -euc '
+              pacman-key --gpgdir /tmp/keyring --init
+              pacman-key --gpgdir /tmp/keyring --add /repo/heroic-felix-key.asc
+              pacman-key --gpgdir /tmp/keyring --lsign-key "$PACMAN_SIGNING_FINGERPRINT"
+              printf "[options]\nArchitecture = x86_64\n[heroic-felix]\nSigLevel = Required\nServer = file:///repo\n" > /tmp/pacman.conf
+              mkdir /tmp/database /tmp/packages
+              pacman --config /tmp/pacman.conf --dbpath /tmp/database --gpgdir /tmp/keyring \
+                --cachedir /tmp/packages -Sywdd --noconfirm heroic-felix
+            '
+      - name: Checksum the complete candidate
+        if: steps.prepare.outputs.build == 'true'
+        run: python3 control/.github/downstream/downstream.py checksums --output "$RUNNER_TEMP/release"
+      - name: Upload the validated candidate
+        if: steps.prepare.outputs.build == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: downstream-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Retain failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: downstream-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/prepare.log
+            ${{ runner.temp }}/lint.log
+            ${{ runner.temp }}/format.patch
+            ${{ runner.temp }}/release/build-info.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher' && github.ref == 'refs/heads/main' && needs.build.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out original trusted control code, not the replayed candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download only this run's validated candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: downstream-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Verify all candidate artifacts
+        run: python3 .github/downstream/downstream.py verify --output release-assets
+      - name: Sign the pacman package and index when configured
+        id: sign
+        env:
+          PACMAN_SIGNING_KEY: ${{ secrets.PACMAN_SIGNING_KEY }}
+          PACMAN_SIGNING_PASSPHRASE: ${{ secrets.PACMAN_SIGNING_PASSPHRASE }}
+          PACMAN_SIGNING_FINGERPRINT: ${{ vars.PACMAN_SIGNING_FINGERPRINT }}
+        run: bash .github/downstream/sign.sh release-assets
+      - name: Atomically promote the tested source and baseline
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_PUSH_TOKEN || github.token }}
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          gh auth setup-git
+          python3 .github/downstream/downstream.py checksums --output release-assets
+          python3 .github/downstream/downstream.py promote --repo . \
+            --output release-assets --expected-head "$EXPECTED_HEAD"
+      - name: Publish immutable release and optional signed package channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ steps.sign.outputs.signed }}
+        run: |
+          rm release-assets/source.bundle
+          python3 .github/downstream/downstream.py checksums --output release-assets
+          bash .github/downstream/publish.sh release-assets
+      - name: Record successful publication
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_PUSH_TOKEN || github.token }}
+        run: |
+          python3 .github/downstream/downstream.py finish --repo . --output release-assets
+          if test -f release-assets/SIGNING-STATUS.txt; then
+            cat release-assets/SIGNING-STATUS.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  status:
+    needs: [build, publish]
+    if: always() && github.repository == 'felixfoertsch/HeroicGamesLauncher' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record health and report or resolve a blocked-update issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          CANDIDATE: ${{ needs.build.outputs.candidate }}
+        run: |
+          gh auth setup-git
+          python3 .github/downstream/downstream.py status --repo . --output "$RUNNER_TEMP"
