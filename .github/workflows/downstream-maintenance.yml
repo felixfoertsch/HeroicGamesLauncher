@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/downstream/release_cleanup.py'
       - '.github/downstream/release_notes.py'
+      - '.github/downstream/disable_cla.py'
+      - '.github/downstream/test_disable_cla.py'
       - '.github/workflows/downstream-maintenance.yml'
       - '.github/workflows/cla.yml'
   workflow_run:
@@ -38,14 +40,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Test metadata validation and conservative archival
+      - name: Test downstream maintenance and guarded publication
         env:
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 -m unittest discover -s .github/downstream -p test_release_notes.py
-      - name: Disable inherited upstream-only CLA automation in this fork
+        run: python3 -m unittest discover -s .github/downstream -p 'test_*.py'
+      - name: Ensure inherited upstream-only CLA automation stays disabled
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow disable cla.yml --repo felixfoertsch/HeroicGamesLauncher
+        run: python3 .github/downstream/disable_cla.py
       - name: Refresh CalVer release descriptions and archive superseded run-ID builds
         env:
           GH_TOKEN: ${{ github.token }}
