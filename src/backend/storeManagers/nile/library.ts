@@ -227,7 +227,7 @@ export default class NileLibraryManager implements LibraryManager {
       return installed.find((game) => game.id === appName)
     } catch (error) {
       logError(
-        ['Could not read', `${nileInstalled}:`, error],
+        ['Corrupted installed.json file, cannot load installed games', error],
         LogPrefix.Nile
       )
     }
