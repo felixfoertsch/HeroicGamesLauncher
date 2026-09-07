@@ -11,6 +11,7 @@ on:
 
 jobs:
   build:
+    if: github.repository != 'felixfoertsch/HeroicGamesLauncher'
     uses: ./.github/workflows/build-base.yml
     with:
       publish-snap: false
