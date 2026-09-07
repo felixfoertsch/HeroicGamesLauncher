@@ -17,6 +17,22 @@ updates reuse the existing lazy-loading observer while the displayed store-copy
 identities are unchanged. Switching the representative, adding/removing cards or
 changing their order refreshes observation so remounted cards still load.
 
+## Stacking preference
+
+The **Stack copies** checkbox beside the library count changes presentation
+only. It is enabled by default and saved locally across library navigation and
+application restarts. Turn it off to show each eligible store copy separately,
+with no multi-copy badge, in the original filtered and sorted library order.
+The preference applies to grid and list layouts and the recent/favourite lanes.
+It does not modify the collection, clear filters or alter the unique-game and
+copy statistics. Statistics continue to use the same conservative matching.
+
+Test the checkbox with mouse and keyboard (Space), navigate away and return,
+then restart Heroic. Verify both layouts and auxiliary lanes, store/installed
+filters, and that visible card placeholders are observed again when the display
+changes. Committed Frontend tests exercise the real Library state and GamesList
+with mocked card bodies and store data; they do not replace a desktop smoke test.
+
 ## Matching and filtering
 
 Matching uses store-provided titles, ignoring case, whitespace, trademark marks,
