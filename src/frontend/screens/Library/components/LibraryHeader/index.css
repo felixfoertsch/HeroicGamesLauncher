@@ -43,8 +43,8 @@
 
 .libraryStatsPopover.MuiTooltip-tooltip {
   background: var(--background);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
+  color: var(--text-default);
+  border: 1px solid var(--modal-border, var(--text-secondary));
   border-radius: var(--space-xs);
   box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
   padding: var(--space-md);
@@ -90,5 +90,5 @@
 .libraryStatsExplanation {
   margin: 0;
   padding-block-start: var(--space-xs);
-  border-block-start: 1px solid var(--border-color);
+  border-block-start: 1px solid var(--modal-border, var(--text-secondary));
 }
