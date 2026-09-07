@@ -1,7 +1,7 @@
 module.exports = {
   rootDir: '../../..',
   roots: ['<rootDir>/.github/scripts/library-stats-review'],
-  testMatch: ['**/ui.test.cjs'],
+  testMatch: ['**/*.test.cjs'],
   testEnvironment: require.resolve('jest-environment-jsdom', {
     paths: [process.env.RUNNER_TEMP + '/library-stats-dom']
   }),

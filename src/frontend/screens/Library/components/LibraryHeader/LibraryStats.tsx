@@ -20,7 +20,8 @@ export default function LibraryStats({ stats }: Props) {
   const { t, i18n } = useTranslation()
   const [open, setOpen] = useState(false)
   const numberFormat = useMemo(
-    () => new Intl.NumberFormat(i18n.resolvedLanguage || i18n.language),
+    // Heroic locale IDs include pt_BR, nb_NO and zh_Hans; Intl uses hyphens.
+    () => new Intl.NumberFormat((i18n.resolvedLanguage || i18n.language)?.replace(/_/g, '-')),
     [i18n.resolvedLanguage, i18n.language]
   )
   const sources: Record<Runner, string> = {
