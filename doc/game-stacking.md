@@ -34,7 +34,7 @@ Grouping happens after the existing store, search, hidden-game, category and
 other library filters; the installed-only restriction is applied before
 counting. The badge counts copies in the current results, not copies excluded
 by filters. Recent/favourite sections group the entries supplied to that section.
-Library header totals continue to count the underlying store entries.
+The library header counts unique game stacks, not their underlying store copies.
 
 This is deliberately conservative title matching, not a global game-identity
 database. Differently named store listings can remain separate, and unrelated
@@ -43,11 +43,37 @@ network requests, metadata services, dependencies or configuration migrations.
 No account records, game installations, saves or per-store settings are merged,
 deleted or hidden by this feature.
 
+## Library overview
+
+Hover over, focus, or activate the header's number to show its overview. Escape
+or moving away dismisses it; the pointer can move into the overview to read it.
+The count and every overview statistic describe the **current main library view**,
+including its store, search, alphabet, category, hidden and installed filters.
+They do not add hidden or filtered-out copies or count the recent/favourite lane
+again. Filtering to a single store naturally removes cross-store overlap.
+
+- **Unique games:** number of stacks, using the same title/edition and ambiguity
+  rules as the cards. This is the number displayed in the header.
+- **Total copies:** distinct runner/app-ID records in those stacks, excluding DLC
+  and repeated records.
+- **Games on multiple stores:** number of stacks containing more than one copy.
+- **Extra copies across stores:** total copies minus unique games. One game owned
+  on three stores contributes one multi-store game and two extra copies.
+- **Copies by source:** the per-store totals, plus sideloads when present. The
+  rows sum to total copies; stores with no copies in this view are omitted.
+
+For example, 400 Epic copies and 100 Amazon copies, with 10 matching games on
+both, yield 490 unique games, 500 copies, 10 multi-store games and 10 extra copies.
+Sideloads are independent entries, not matched to store titles. These statistics
+use existing library metadata only and never fetch additional account data.
+
 ## Tests
 
 The Common Jest project contains regression tests for matching, ambiguous
 editions, sideloads, DLC exclusion, filter semantics, stable ordering,
-store-scoped IDs, non-mutation and representative selection.
+store-scoped IDs, non-mutation, representative selection and overview totals.
+`gameLibraryStats.test.ts` checks three-store overlaps, the 400/100-copy example,
+per-source reconciliation, empty views and current-view filtering.
 
 ```sh
 pnpm test --selectProjects Common --runInBand
@@ -75,3 +101,7 @@ running `pnpm download-helper-binaries`.
    after the operation completes and the representative changes.
 6. Check a base game, sequel and remaster: they must remain separate. Check that
    each copy's settings, save location and uninstall actions remain independent.
+7. Compare the header count with main-list stacks, then open its overview using
+   hover, keyboard focus, Enter/Space and touch. Check Escape, moving into and out
+   of the overview, filtering while it is open, and a zero-result search. Confirm
+   source counts sum to total copies and games plus extra copies equals copies.
