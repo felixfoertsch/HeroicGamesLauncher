@@ -1,0 +1,29 @@
+name: Inspect CI-first history
+on:
+  push:
+    branches: [maintenance/ci-reorder]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export inspected source histories for local verification
+        run: |
+          mkdir "$RUNNER_TEMP/inspection"
+          git bundle create "$RUNNER_TEMP/inspection/repository.bundle" refs/remotes/origin/main refs/remotes/origin/feat/stack-game-copies refs/remotes/origin/fix/nile-amazon-login refs/remotes/origin/downstream-base refs/remotes/origin/upstream-base
+          git show-ref > "$RUNNER_TEMP/inspection/refs.txt"
+          git log --all --format='%H %P %s' -100 > "$RUNNER_TEMP/inspection/history.txt"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: ci-reorder-inspection
+          path: ${{ runner.temp }}/inspection/
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
