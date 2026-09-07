@@ -62,7 +62,8 @@ function normalizeStackTitle(title: string): string {
  */
 export function groupGameCopies(
   library: readonly GameInfo[],
-  onlyInstalled = false
+  onlyInstalled = false,
+  stackCopies = true
 ): GameInfo[][] {
   const seen = new Set<string>()
   const games = library.filter((game) => {
@@ -74,6 +75,9 @@ export function groupGameCopies(
     seen.add(identity)
     return true
   })
+
+  // Disabling stacking preserves the original order and eligibility rules.
+  if (!stackCopies) return games.map((game) => [game])
 
   const candidates = new Map<string, GameInfo[]>()
   for (const game of games) {

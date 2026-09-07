@@ -92,3 +92,42 @@
   padding-block-start: var(--space-xs);
   border-block-start: 1px solid var(--modal-border, var(--text-secondary));
 }
+
+.libraryHeader .libraryHeaderWrapper {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+}
+
+.libraryTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.stackCopiesToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-inline-start: var(--space-sm);
+  font-size: var(--text-md);
+  font-weight: var(--regular);
+  text-transform: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.stackCopiesToggle input {
+  margin: 0;
+  inline-size: 1em;
+  block-size: 1em;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+
+@media (max-width: 800px) {
+  .libraryHeader .libraryHeaderWrapper {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'title' 'action';
+    row-gap: var(--space-md);
+  }
+}

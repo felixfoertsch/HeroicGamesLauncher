@@ -14,7 +14,8 @@ type Props = {
 
 export default React.memo(function LibraryHeader({ list }: Props) {
   const { t } = useTranslation()
-  const { showFavourites } = useContext(LibraryContext)
+  const { showFavourites, stackCopies, setStackCopies } =
+    useContext(LibraryContext)
 
   const stats = useMemo(() => getGameLibraryStats(list), [list])
 
@@ -27,6 +28,14 @@ export default React.memo(function LibraryHeader({ list }: Props) {
             : t('title.allGames', 'All Games')}
           <LibraryStats stats={stats} />
           <AddGameButton data-tour="library-add-game" />
+          <label className="stackCopiesToggle">
+            <input
+              type="checkbox"
+              checked={stackCopies}
+              onChange={(event) => setStackCopies(event.currentTarget.checked)}
+            />
+            {t('gameCopies.stack', 'Stack copies')}
+          </label>
         </span>
         <ActionIcons />
       </div>

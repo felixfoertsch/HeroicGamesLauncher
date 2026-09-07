@@ -4,6 +4,8 @@ import { GameInfo } from 'common/types'
 import { LibraryContextType } from 'frontend/types'
 
 const initialContext: LibraryContextType = {
+  stackCopies: true,
+  setStackCopies: () => null,
   storesFilters: {
     legendary: true,
     gog: true,

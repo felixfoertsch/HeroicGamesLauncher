@@ -10,6 +10,7 @@ import cx from 'classnames'
 import GameCard from '../GameCard'
 import ContextProvider from 'frontend/state/ContextProvider'
 import { useTranslation } from 'react-i18next'
+import LibraryContext from '../../LibraryContext'
 
 interface Props {
   library: GameInfo[]
@@ -63,11 +64,12 @@ const GamesList = ({
     activeController
   } = useContext(ContextProvider)
   const { t } = useTranslation()
+  const { stackCopies } = useContext(LibraryContext)
   const listRef = useRef<HTMLDivElement | null>(null)
 
   const stacks = useMemo(
-    () => groupGameCopies(library, onlyInstalled),
-    [library, onlyInstalled]
+    () => groupGameCopies(library, onlyInstalled, stackCopies),
+    [library, onlyInstalled, stackCopies]
   )
 
   const cards = useMemo(() => {
