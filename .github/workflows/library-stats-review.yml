@@ -38,6 +38,11 @@ jobs:
           pnpm exec prettier --write src/common/gameLibraryStats.ts src/common/__tests__/gameLibraryStats.test.ts src/frontend/screens/Library/components/LibraryHeader doc/game-stacking.md .github/scripts/library-stats-review .github/workflows/library-stats-review.yml
       - name: Test the real header and Material UI hover, keyboard and filter behavior
         run: pnpm exec jest --config .github/scripts/library-stats-review/jest.config.cjs --runInBand --json --outputFile="$RUNNER_TEMP/stats-ui.json"
+      - name: Preserve the executed harness outside the source being delivered
+        run: |
+          mkdir -p "$RUNNER_TEMP/library-stats-result/verification"
+          mv .github/scripts/library-stats-review "$RUNNER_TEMP/library-stats-result/verification/"
+          mv .github/workflows/library-stats-review.yml "$RUNNER_TEMP/library-stats-result/verification/"
       - name: Check the independent stacking contribution
         run: |
           pnpm codecheck
