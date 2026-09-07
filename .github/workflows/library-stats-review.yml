@@ -1,0 +1,79 @@
+name: Validate library overview enhancement
+
+on:
+  push:
+    branches: [maintenance/library-stats]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-stats-enhancement
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      HUSKY: '0'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install locked dependencies and isolated DOM test tooling
+        run: |
+          pnpm install --frozen-lockfile
+          npm install --prefix "$RUNNER_TEMP/library-stats-dom" --no-audit --no-fund --ignore-scripts jest-environment-jsdom@29.7.0
+      - name: Format only this enhancement and temporary verification tooling
+        run: |
+          pnpm exec prettier --write src/common/gameLibraryStats.ts src/common/__tests__/gameLibraryStats.test.ts src/frontend/screens/Library/components/LibraryHeader doc/game-stacking.md .github/scripts/library-stats-review .github/workflows/library-stats-review.yml
+      - name: Test the real header and Material UI hover, keyboard and filter behavior
+        run: pnpm exec jest --config .github/scripts/library-stats-review/jest.config.cjs --runInBand --json --outputFile="$RUNNER_TEMP/stats-ui.json"
+      - name: Check the independent stacking contribution
+        run: |
+          pnpm codecheck
+          pnpm test --runInBand --json --outputFile="$RUNNER_TEMP/stats-jest.json"
+          pnpm lint
+          pnpm prettier
+      - name: Preserve formatted source and apply the same change to downstream main locally
+        run: |
+          RESULT="$RUNNER_TEMP/library-stats-result"
+          mkdir -p "$RESULT/source"
+          paths=(src/common/gameLibraryStats.ts src/common/__tests__/gameLibraryStats.test.ts src/frontend/screens/Library/components/LibraryHeader/LibraryStats.tsx src/frontend/screens/Library/components/LibraryHeader/index.tsx src/frontend/screens/Library/components/LibraryHeader/index.css doc/game-stacking.md)
+          cp --parents "${paths[@]}" "$RESULT/source/"
+          git diff bc189c740719addec7905a9abfcfeb41d7e3c21a -- "${paths[@]}" > "$RESULT/change.patch"
+          git checkout --force 9004571a8cd1a726592d5ee1c29fceb4ba71f014
+          git apply "$RESULT/change.patch"
+          for path in "${paths[@]}"; do cmp "$path" "$RESULT/source/$path"; done
+      - name: Check the combined downstream source
+        run: |
+          pnpm codecheck
+          pnpm test --runInBand --json --outputFile="$RUNNER_TEMP/stats-downstream-jest.json"
+          pnpm lint
+          pnpm prettier
+      - name: Preserve test reports
+        run: cp "$RUNNER_TEMP/stats-ui.json" "$RUNNER_TEMP/stats-jest.json" "$RUNNER_TEMP/stats-downstream-jest.json" "$RUNNER_TEMP/library-stats-result/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: library-stats-${{ github.run_id }}
+          path: ${{ runner.temp }}/library-stats-result/
+          if-no-files-found: error
+      - name: Preserve failure diagnostics
+        if: failure()
+        run: git diff > "$RUNNER_TEMP/stats-failure.patch"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: library-stats-failure-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/stats-*.json
+            ${{ runner.temp }}/stats-failure.patch
