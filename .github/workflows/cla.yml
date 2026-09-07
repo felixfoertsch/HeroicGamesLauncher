@@ -13,6 +13,9 @@ permissions:
 
 jobs:
   CLAAssistant:
+    # This bot records signatures for the upstream project's CLA, not fork builds.
+    # Keep the condition on the job so forks do not download or start the action.
+    if: github.repository == 'Heroic-Games-Launcher/HeroicGamesLauncher'
     runs-on: ubuntu-latest
     steps:
       - name: 'CLA Assistant'
