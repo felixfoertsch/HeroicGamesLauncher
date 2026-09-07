@@ -1,32 +1,131 @@
-name: Inspect CI-first history
+name: Validate and install CI-first branch history
 on:
   push:
     branches: [maintenance/ci-reorder]
 permissions:
   contents: read
+concurrency:
+  group: heroic-ci-reorder
+  cancel-in-progress: false
+env:
+  HUSKY: '0'
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
 jobs:
-  inspect:
+  prepare:
     if: github.repository == 'felixfoertsch/HeroicGamesLauncher'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Export baseline and only the downstream histories
-        run: |
-          mkdir "$RUNNER_TEMP/inspection"
-          base=2cc01fe4c88703ed002eafa6eb0ca06bb43443fc
-          git archive --format=tar.gz --output="$RUNNER_TEMP/inspection/baseline.tar.gz" "$base"
-          git cat-file commit "$base" > "$RUNNER_TEMP/inspection/baseline.commit"
-          git bundle create "$RUNNER_TEMP/inspection/repository.bundle" refs/remotes/origin/main refs/remotes/origin/feat/stack-game-copies refs/remotes/origin/fix/nile-amazon-login refs/remotes/origin/upstream-base "^$base"
-          git show-ref > "$RUNNER_TEMP/inspection/refs.txt"
-          git log --all --format='%H %P %s' -100 > "$RUNNER_TEMP/inspection/history.txt"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          name: ci-reorder-inspection
-          path: ${{ runner.temp }}/inspection/
-          retention-days: 7
-          compression-level: 0
+          version: 10.28.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Assemble and verify the three independent candidates
+        run: bash .github/ci-reorder/prepare.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        id: upload
+        with:
+          name: ci-first-candidates-${{ github.run_id }}
+          path: ${{ runner.temp }}/reordered/
           if-no-files-found: error
+          retention-days: 14
+  validate:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [main, stack, nile]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          digest-mismatch: error
+          merge-multiple: true
+          path: ${{ runner.temp }}/reordered
+      - name: Check out only the prepared candidate
+        env:
+          CANDIDATE: ${{ matrix.candidate }}
+        run: |
+          git fetch "$RUNNER_TEMP/reordered/candidates.bundle" "refs/reorder/$CANDIDATE"
+          git checkout --detach FETCH_HEAD
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test all release and real-Git automation
+        run: python3 -m unittest discover -s .github/downstream -p 'test_*.py'
+      - name: Type-check
+        run: pnpm codecheck
+      - name: Run the complete Jest suite
+        run: pnpm test --runInBand --json --outputFile="$RUNNER_TEMP/jest.json"
+      - name: Lint
+        run: |
+          if pnpm lint > "$RUNNER_TEMP/lint.log" 2>&1; then
+            tail -n 4 "$RUNNER_TEMP/lint.log"
+          else
+            cat "$RUNNER_TEMP/lint.log"
+            exit 1
+          fi
+      - name: Check formatting and unchanged tracked files
+        run: |
+          pnpm prettier
+          git diff --exit-code
+          git diff --cached --exit-code
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: ci-first-validation-${{ matrix.candidate }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/jest.json
+            ${{ runner.temp }}/lint.log
+          retention-days: 14
+  promote:
+    needs: [prepare, validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: heroic-downstream
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          digest-mismatch: error
+          merge-multiple: true
+          path: reordered
+      - name: Back up and atomically replace only the inspected branch heads
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_PUSH_TOKEN || github.token }}
+          HAS_PUSH_TOKEN: ${{ secrets.DOWNSTREAM_PUSH_TOKEN != '' }}
+        run: |
+          gh auth setup-git
+          python3 .github/ci-reorder/promote.py
