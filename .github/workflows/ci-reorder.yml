@@ -14,10 +14,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Export inspected source histories for local verification
+      - name: Export baseline and only the downstream histories
         run: |
           mkdir "$RUNNER_TEMP/inspection"
-          git bundle create "$RUNNER_TEMP/inspection/repository.bundle" refs/remotes/origin/main refs/remotes/origin/feat/stack-game-copies refs/remotes/origin/fix/nile-amazon-login refs/remotes/origin/downstream-base refs/remotes/origin/upstream-base
+          base=2cc01fe4c88703ed002eafa6eb0ca06bb43443fc
+          git archive --format=tar.gz --output="$RUNNER_TEMP/inspection/baseline.tar.gz" "$base"
+          git cat-file commit "$base" > "$RUNNER_TEMP/inspection/baseline.commit"
+          git bundle create "$RUNNER_TEMP/inspection/repository.bundle" refs/remotes/origin/main refs/remotes/origin/feat/stack-game-copies refs/remotes/origin/fix/nile-amazon-login refs/remotes/origin/upstream-base "^$base"
           git show-ref > "$RUNNER_TEMP/inspection/refs.txt"
           git log --all --format='%H %P %s' -100 > "$RUNNER_TEMP/inspection/history.txt"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
