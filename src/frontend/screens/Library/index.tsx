@@ -73,6 +73,14 @@ export default React.memo(function Library(): JSX.Element {
     <p>{t('help.content.library', 'Shows all owned games.')}</p>
   )
 
+  const [stackCopies, setStackCopies] = useState(
+    () => storage.getItem('stack_copies') !== 'false'
+  )
+  const handleStackCopies = (value: boolean) => {
+    storage.setItem('stack_copies', String(value))
+    setStackCopies(value)
+  }
+
   const [layout, setLayout] = useState(storage.getItem('layout') || 'grid')
   const handleLayout = (layout: string) => {
     storage.setItem('layout', layout)
@@ -686,6 +694,8 @@ export default React.memo(function Library(): JSX.Element {
   return (
     <LibraryContext.Provider
       value={{
+        stackCopies,
+        setStackCopies: handleStackCopies,
         storesFilters,
         platformsFilters,
         layout,

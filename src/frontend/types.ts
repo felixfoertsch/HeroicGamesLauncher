@@ -222,6 +222,8 @@ export interface PlatformsFilters {
 }
 
 export interface LibraryContextType {
+  stackCopies: boolean
+  setStackCopies: (value: boolean) => void
   storesFilters: StoresFilters
   platformsFilters: PlatformsFilters
   filterText: string

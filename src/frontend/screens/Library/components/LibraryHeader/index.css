@@ -22,10 +22,112 @@
 }
 
 .numberOfgames {
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-md);
   font-weight: var(--regular);
   background: var(--input-background);
   padding: var(--space-xs);
   margin-inline-start: var(--space-sm, 4px);
   border-radius: var(--space-3xs);
+}
+
+.numberOfgames:hover,
+.numberOfgames:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.libraryStatsPopover.MuiTooltip-tooltip {
+  background: var(--background);
+  color: var(--text-default);
+  border: 1px solid var(--modal-border, var(--text-secondary));
+  border-radius: var(--space-xs);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+  padding: var(--space-md);
+  max-width: min(360px, calc(100vw - 32px));
+  font-family: var(--secondary-font-family);
+  font-size: var(--text-sm);
+  font-weight: var(--regular);
+  text-transform: none;
+  line-height: 1.5;
+}
+
+.libraryStatsHeading {
+  margin: 0;
+  font-weight: bold;
+}
+
+.libraryStatsScope {
+  margin: var(--space-2xs) 0 var(--space-sm);
+}
+
+.libraryStatsNumbers {
+  margin: var(--space-xs) 0 var(--space-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.libraryStatsNumbers > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-lg);
+}
+
+.libraryStatsNumbers dt {
+  overflow-wrap: anywhere;
+}
+
+.libraryStatsNumbers dd {
+  margin: 0;
+  flex-shrink: 0;
+  text-align: end;
+}
+
+.libraryStatsExplanation {
+  margin: 0;
+  padding-block-start: var(--space-xs);
+  border-block-start: 1px solid var(--modal-border, var(--text-secondary));
+}
+
+.libraryHeader .libraryHeaderWrapper {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+}
+
+.libraryTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.stackCopiesToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-inline-start: var(--space-sm);
+  font-size: var(--text-md);
+  font-weight: var(--regular);
+  text-transform: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.stackCopiesToggle input {
+  margin: 0;
+  inline-size: 1em;
+  block-size: 1em;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+
+@media (max-width: 800px) {
+  .libraryHeader .libraryHeaderWrapper {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'title' 'action';
+    row-gap: var(--space-md);
+  }
 }

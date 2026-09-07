@@ -135,6 +135,7 @@
     "husky": "^8.0.3",
     "i18next-parser": "^9.3.0",
     "jest": "^29.7.0",
+    "jest-environment-jsdom": "29.7.0",
     "node-gyp": "^10.3.1",
     "prettier": "^3.7.4",
     "sass": "^1.87.0",
