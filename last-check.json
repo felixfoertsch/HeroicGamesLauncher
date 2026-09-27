@@ -1,9 +1,9 @@
 {
-  "checkedAt": "2026-09-26T05:10:59.639579+00:00",
+  "checkedAt": "2026-09-27T05:27:58.958936+00:00",
   "result": "success",
   "source": "ac2ef77701ae0e6f6e2c0d8f19471a6f5a1f337d",
   "candidate": "ac2ef77701ae0e6f6e2c0d8f19471a6f5a1f337d",
-  "run": "https://github.com/felixfoertsch/HeroicGamesLauncher/actions/runs/36219982314",
+  "run": "https://github.com/felixfoertsch/HeroicGamesLauncher/actions/runs/36297250146",
   "build": "success",
   "publish": "skipped"
 }
