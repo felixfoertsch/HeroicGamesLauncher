@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useRef,
   useState
 } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -18,7 +19,8 @@ import {
 } from 'frontend/helpers/gamepad'
 import './index.css'
 import LoginWarning from '../Login/components/LoginWarning'
-import { NileLoginData } from 'common/types/nile'
+import { NileLoginUrl } from 'common/types/nile'
+import { getAmazonAuthorizationCode } from 'common/nileAuth'
 import {
   Dialog,
   DialogContent,
@@ -52,9 +54,14 @@ export default function WebView() {
     refresh: true,
     message: t('loading.website', 'Loading Website')
   }))
-  const [amazonLoginData, setAmazonLoginData] = useState<NileLoginData | null>(
+  const [amazonLoginData, setAmazonLoginData] = useState<NileLoginUrl | null>(
     null
   )
+  const [amazonLoginError, setAmazonLoginError] = useState<string | null>(null)
+  const [amazonLoginAttempt, setAmazonLoginAttempt] = useState(0)
+  const amazonLoginGeneration = useRef(0)
+  const handledAmazonCode = useRef<string | null>(null)
+  const amazonLoginInProgress = useRef(false)
   const navigate = useNavigate()
   // Keep the webview element in state (via a callback ref) instead of a plain
   // ref so that mounting/remounting it — e.g. when switching stores — triggers
@@ -124,40 +131,106 @@ export default function WebView() {
 
   useEffect(() => {
     if (pathname !== '/loginweb/nile') return
-    console.log('Loading amazon login data')
-
+    const generation = ++amazonLoginGeneration.current
+    let active = true
+    handledAmazonCode.current = null
+    amazonLoginInProgress.current = false
+    setAmazonLoginData(null)
+    setAmazonLoginError(null)
     setLoading({
       refresh: true,
       message: t('status.preparing_login', 'Preparing Login...')
     })
-    amazon.getLoginData().then((data) => {
-      setAmazonLoginData(data)
-      setLoading({
-        ...loading,
-        refresh: false
+
+    const fail = () => {
+      setAmazonLoginError(
+        t(
+          'amazon-login.prepare-error',
+          'Could not prepare Amazon login. Check your connection and Nile executable, then retry.'
+        )
+      )
+      setLoading((current) => ({ ...current, refresh: false }))
+    }
+    const timeout = window.setTimeout(() => {
+      if (!active) return
+      active = false
+      window.api.abort('nile-auth')
+      fail()
+    }, 30000)
+
+    void amazon
+      .getLoginData()
+      .then((data) => {
+        if (!active || generation !== amazonLoginGeneration.current) return
+        if ('user' in data) {
+          // Nile's profile has rehydrated the backend cache. Reload the renderer
+          // so GlobalState also picks up the recovered account and its library.
+          navigate('/login', { replace: true })
+          window.location.reload()
+          return
+        }
+        setAmazonLoginData(data)
+        setLoading({
+          refresh: true,
+          message: t('loading.website', 'Loading Website')
+        })
       })
-    })
-  }, [pathname])
+      .catch(() => {
+        if (active) fail()
+      })
+      .finally(() => window.clearTimeout(timeout))
+
+    return () => {
+      active = false
+      amazonLoginGeneration.current++
+      amazonLoginInProgress.current = false
+      window.clearTimeout(timeout)
+    }
+  }, [pathname, amazonLoginAttempt])
 
   const handleAmazonLogin = (code: string) => {
-    if (!amazonLoginData) {
-      console.error('Could not login to Amazon because login data is missing')
+    if (
+      !amazonLoginData ||
+      amazonLoginInProgress.current ||
+      handledAmazonCode.current === code
+    ) {
       return
     }
-
+    const generation = amazonLoginGeneration.current
+    handledAmazonCode.current = code
+    amazonLoginInProgress.current = true
+    setAmazonLoginError(null)
     setLoading({
       refresh: true,
       message: t('status.logging', 'Logging In...')
     })
-    amazon
+
+    void amazon
       .login({
         client_id: amazonLoginData.client_id,
-        code: code,
+        code,
         code_verifier: amazonLoginData.code_verifier,
         serial: amazonLoginData.serial
       })
-      .then(() => {
+      .then((status) => {
+        if (generation !== amazonLoginGeneration.current) return
+        if (status !== 'done') throw new Error('Amazon login failed')
         handleSuccessfulLogin()
+      })
+      .catch(() => {
+        if (generation !== amazonLoginGeneration.current) return
+        setAmazonLoginError(
+          t(
+            'amazon-login.register-error',
+            'Amazon login could not be completed. Retry to start a new sign-in attempt.'
+          )
+        )
+        setLoading((current) => ({ ...current, refresh: false }))
+      })
+      .finally(() => {
+        if (generation === amazonLoginGeneration.current) {
+          amazonLoginInProgress.current = false
+        }
       })
   }
 
@@ -178,7 +251,9 @@ export default function WebView() {
   useLayoutEffect(() => {
     if (webview) {
       const loadstop = () => {
-        setLoading({ ...loading, refresh: false })
+        if (!amazonLoginInProgress.current) {
+          setLoading((current) => ({ ...current, refresh: false }))
+        }
         const userAgent =
           startUrl === epicLoginUrl
             ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) EpicGamesLauncher'
@@ -212,15 +287,12 @@ export default function WebView() {
               gog.login(code).then(() => handleSuccessfulLogin())
             }
           }
-        } else if (runner === 'nile') {
-          const pageURL = webview.getURL()
-          const parsedURL = new URL(pageURL)
-          const code = parsedURL.searchParams.get(
-            'openid.oa2.authorization_code'
+        } else if (runner === 'nile' && amazonLoginData) {
+          const code = getAmazonAuthorizationCode(
+            webview.getURL(),
+            amazonLoginData.url
           )
-          if (code) {
-            handleAmazonLogin(code)
-          }
+          if (code) handleAmazonLogin(code)
         } else if (runner == 'legendary') {
           const pageUrl = webview.getURL()
           const parsedUrl = new URL(pageUrl)
@@ -259,6 +331,27 @@ export default function WebView() {
         }
       }
 
+      const onAmazonNavigate = (event: {
+        url: string
+        isMainFrame?: boolean
+      }) => {
+        if (
+          runner !== 'nile' ||
+          !amazonLoginData ||
+          event.isMainFrame === false
+        ) {
+          return
+        }
+        const code = getAmazonAuthorizationCode(event.url, amazonLoginData.url)
+        if (code) handleAmazonLogin(code)
+      }
+
+      // The landing page can redirect again before dom-ready. Consume the
+      // main-frame callback URL from the navigation event instead of getURL().
+      webview.addEventListener('did-start-navigation', onAmazonNavigate)
+      webview.addEventListener('did-redirect-navigation', onAmazonNavigate)
+      webview.addEventListener('did-navigate', onAmazonNavigate)
+      webview.addEventListener('did-navigate-in-page', onAmazonNavigate)
       webview.addEventListener('dom-ready', loadstop)
       webview.addEventListener('did-fail-load', onerror)
       // if the page title changed it's because the store loaded so there's
@@ -271,6 +364,10 @@ export default function WebView() {
       webview.addEventListener('page-title-updated', updateConnectivity)
 
       return () => {
+        webview.removeEventListener('did-start-navigation', onAmazonNavigate)
+        webview.removeEventListener('did-redirect-navigation', onAmazonNavigate)
+        webview.removeEventListener('did-navigate', onAmazonNavigate)
+        webview.removeEventListener('did-navigate-in-page', onAmazonNavigate)
         webview.removeEventListener('dom-ready', loadstop)
         webview.removeEventListener('did-fail-load', onerror)
         webview.removeEventListener('page-title-updated', updateConnectivity)
@@ -448,15 +545,37 @@ export default function WebView() {
         />
       )}
       {loading.refresh && <UpdateComponent message={loading.message} />}
-      <webview
-        key={store}
-        ref={webviewRef}
-        className="WebView__webview"
-        partition={`persist:${store ?? (runner === 'legendary' ? 'epic' : runner === 'nile' ? 'amazon' : runner)}`}
-        src={startUrl}
-        allowpopups={trueAsStr}
-        preload={webviewPreloadPath}
-      />
+      {runner === 'nile' && amazonLoginError ? (
+        <div className="WebView__loginError" role="alert">
+          <p>{amazonLoginError}</p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => setAmazonLoginAttempt((attempt) => attempt + 1)}
+          >
+            {t('amazon-login.retry', 'Retry')}
+          </button>
+          <button
+            type="button"
+            className="button outline"
+            onClick={() => navigate('/login')}
+          >
+            {t('amazon-login.cancel', 'Back to accounts')}
+          </button>
+        </div>
+      ) : (
+        startUrl && (
+          <webview
+            key={runner === 'nile' ? `nile-${amazonLoginAttempt}` : store}
+            ref={webviewRef}
+            className="WebView__webview"
+            partition={`persist:${store ?? (runner === 'legendary' ? 'epic' : runner === 'nile' ? 'amazon' : runner)}`}
+            src={startUrl}
+            allowpopups={trueAsStr}
+            preload={webviewPreloadPath}
+          />
+        )
+      )}
       {showLoginWarningFor && (
         <LoginWarning
           warnLoginForStore={showLoginWarningFor}
