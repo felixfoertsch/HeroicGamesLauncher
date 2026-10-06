@@ -31,6 +31,12 @@
             "toggle": "Use GOG affiliate links"
         }
     },
+    "amazon-login": {
+        "cancel": "Back to accounts",
+        "prepare-error": "Could not prepare Amazon login. Check your connection and Nile executable, then retry.",
+        "register-error": "Amazon login could not be completed. Retry to start a new sign-in attempt.",
+        "retry": "Retry"
+    },
     "amazon-luna": "Amazon Luna",
     "analyticsModal": {
         "disable": "Disable",
