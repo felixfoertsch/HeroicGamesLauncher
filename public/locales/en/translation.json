@@ -488,6 +488,14 @@
         "store": "Store",
         "title": "Game Title"
     },
+    "gameCopies": {
+        "description": "Choose a store version to open its game page. Each copy keeps its own installation and settings.",
+        "installed": "Installed",
+        "notInstalled": "Not installed",
+        "show_one": "Show {{count}} copies of {{title}}",
+        "show_other": "Show {{count}} copies of {{title}}",
+        "title": "Copies of {{title}}"
+    },
     "General": "General",
     "generic": {
         "abort": "Abort",
