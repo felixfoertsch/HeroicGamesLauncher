@@ -2,7 +2,8 @@ import type { GameInfo } from '../types'
 import {
   getGameIdentity,
   getGameStackRepresentative,
-  groupGameCopies
+  groupGameCopies,
+  summarizeGameCopies
 } from '../gameStack'
 
 function game(
@@ -166,6 +167,35 @@ describe('groupGameCopies', () => {
 
   it('handles empty input', () => {
     expect(groupGameCopies([])).toEqual([])
+  })
+})
+
+describe('summarizeGameCopies', () => {
+  it('distinguishes multi-store games from extra copies and excludes DLC', () => {
+    const epic = game('legendary', 'epic', 'Shared', { is_installed: true })
+    const summary = summarizeGameCopies([
+      epic,
+      epic,
+      game('gog', 'gog', 'Shared'),
+      game('nile', 'amazon', 'Shared', { is_installed: true }),
+      game('gog', 'other', 'Other'),
+      game('sideload', 'custom', 'Shared'),
+      game('gog', 'dlc', 'DLC', { install: { is_dlc: true } })
+    ])
+    expect(summary).toEqual({
+      stores: new Map([
+        ['legendary', 1],
+        ['gog', 2],
+        ['nile', 1],
+        ['sideload', 1]
+      ]),
+      copies: 5,
+      unique: 3,
+      duplicated: 1,
+      extraCopies: 2,
+      installed: 1
+    })
+    expect(summarizeGameCopies([]).unique).toBe(0)
   })
 })
 
