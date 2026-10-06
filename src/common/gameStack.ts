@@ -74,6 +74,25 @@ export function groupGameCopies(
   return result
 }
 
+/** Count the same filtered, deduplicated games used by library cards. */
+export function summarizeGameCopies(library: readonly GameInfo[]) {
+  const stacks = groupGameCopies(library)
+  const copies = stacks.flat()
+  const stores = new Map<GameInfo['runner'], number>()
+  for (const game of copies) {
+    stores.set(game.runner, (stores.get(game.runner) ?? 0) + 1)
+  }
+  return {
+    stores,
+    copies: copies.length,
+    unique: stacks.length,
+    duplicated: stacks.filter((stack) => stack.length > 1).length,
+    extraCopies: copies.length - stacks.length,
+    installed: stacks.filter((stack) => stack.some((game) => game.is_installed))
+      .length
+  }
+}
+
 /** Keep running/download operations visible, then prefer an installed copy. */
 export function getGameStackRepresentative(
   copies: readonly GameInfo[],
