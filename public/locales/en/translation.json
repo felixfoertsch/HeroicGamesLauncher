@@ -663,6 +663,16 @@
         }
     },
     "Library": "Library",
+    "librarySummary": {
+        "copies": "Total store copies",
+        "duplicates": "Multi-store games",
+        "extra": "Extra copies",
+        "installed": "Installed games",
+        "matching": "Duplicates use matching store titles. Different editions stay separate; installations and settings are never merged.",
+        "scope": "Counts reflect current library filters. DLC is excluded.",
+        "title": "Library summary",
+        "unique": "Unique games"
+    },
     "loading": {
         "default": "Loading",
         "website": "Loading Website"
