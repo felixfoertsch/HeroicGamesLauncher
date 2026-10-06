@@ -1,3 +1,14 @@
+This fork prepares custom Heroic builds from upstream [`main`](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/tree/main) or a stable release plus accepted patches. Stable/nightly automation migration is unfinished; Nile fixes and game stacking remain separate, unfinished work and are not included in published builds.
+
+# Downstream patches
+
+No application patches are accepted for the stable/nightly queue yet. Preserved work:
+
+- [Nile session and login fixes — unfinished](https://github.com/felixfoertsch/HeroicGamesLauncher/tree/fix/nile-amazon-login)
+- [Cross-store game stacking — unfinished](https://github.com/felixfoertsch/HeroicGamesLauncher/tree/feat/stack-game-copies)
+
+---
+
 # Heroic Games Launcher
 
 [![GitHub release](https://img.shields.io/github/v/release/Heroic-Games-Launcher/HeroicGamesLauncher?style=for-the-badge)](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest)
