@@ -24,6 +24,7 @@ import { copySync } from 'fs-extra'
 import { NileUser } from './user'
 import { runNileCommandStub } from './e2eMock'
 import { nileConfigPath, nileInstalled, nileLibrary } from './constants'
+import { recoverNileSession } from './session'
 import NileGame from './games'
 import type { LibraryManager } from 'common/types/game_manager'
 
@@ -37,7 +38,7 @@ export default class NileLibraryManager implements LibraryManager {
     const globalNileConfig = join(app.getPath('appData'), 'nile')
     if (!existsSync(nileConfigPath) && existsSync(globalNileConfig)) {
       copySync(globalNileConfig, nileConfigPath)
-      await NileUser.getUserData()
+      NileUser.getUserData()
     }
 
     this.refresh()
@@ -333,12 +334,19 @@ export default class NileLibraryManager implements LibraryManager {
     if (game) {
       const metadata = this.installedGames.get(appName)
       // Get size info from Nile
-      const { stdout: output } = await this.runRunnerCommand(
+      const result = await this.runRunnerCommand(
         ['install', '--info', '--json', appName],
         { abortId: appName }
       )
-
-      const { download_size }: NileGameDownloadInfo = JSON.parse(output)
+      if (result.error || result.abort || !result.stdout.trim()) {
+        throw new Error(
+          'Could not get Amazon install info; sign in again and retry'
+        )
+      }
+      const { download_size }: NileGameDownloadInfo = JSON.parse(result.stdout)
+      if (!Number.isFinite(download_size) || download_size < 0) {
+        throw new Error('Nile returned invalid Amazon download size')
+      }
       const installInfo = {
         game: {
           id: appName,
@@ -467,6 +475,23 @@ export default class NileLibraryManager implements LibraryManager {
   ): Promise<ExecResult> {
     if (process.env.CI === 'e2e') {
       return runNileCommandStub(commandParts)
+    }
+
+    try {
+      if (!['auth', 'register'].includes(commandParts[0])) {
+        recoverNileSession(nileConfigPath)
+      }
+    } catch {
+      // Credential-bearing parsing errors must never reach logs.
+      logError(
+        'Could not recover Amazon session; sign in again',
+        LogPrefix.Nile
+      )
+      return {
+        stdout: '',
+        stderr: '',
+        error: 'Could not recover Amazon session; sign in again'
+      }
     }
 
     const { dir, bin } = getNileBin()
