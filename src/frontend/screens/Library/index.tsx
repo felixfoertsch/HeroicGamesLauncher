@@ -705,7 +705,7 @@ export default React.memo(function Library(): JSX.Element {
 
       <div className="listing">
         <span id="top" />
-        <LibraryHeader />
+        <LibraryHeader list={libraryToShow} />
 
         {showAlphabetFilter && <AlphabetFilter />}
 
