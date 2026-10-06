@@ -53,6 +53,7 @@ import {
 } from '@mui/icons-material'
 import EditGameDialog from 'frontend/components/UI/EditGameDialog'
 import { openInstallGameModal } from 'frontend/state/InstallGameModal'
+import GameCopies from '../GameCopies'
 
 interface Card {
   buttonClick: () => void
@@ -60,6 +61,7 @@ interface Card {
   isRecent: boolean
   justPlayed: boolean
   gameInfo: GameInfo
+  copies?: readonly GameInfo[]
   forceCard?: boolean
   dataTour?: string
 }
@@ -73,6 +75,7 @@ const GameCard = ({
   isRecent = false,
   justPlayed = false,
   gameInfo: gameInfoFromProps,
+  copies = [],
   dataTour
 }: Card) => {
   const [visible, setVisible] = useState(false)
@@ -479,6 +482,7 @@ const GameCard = ({
               {t('status.hasUpdates')}
             </span>
           )}
+          <GameCopies copies={copies} title={title} />
           <Link
             to={`/gamepage/${runner}/${appName}`}
             state={{ gameInfo }}
