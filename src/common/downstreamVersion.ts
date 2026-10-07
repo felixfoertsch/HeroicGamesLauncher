@@ -1,2 +1,1 @@
-// Reconstruction stamps upstream version and accepted queue length before builds.
-export const downstreamVersion: string | undefined = undefined
+export const downstreamVersion = '2.22.3 + #4'
