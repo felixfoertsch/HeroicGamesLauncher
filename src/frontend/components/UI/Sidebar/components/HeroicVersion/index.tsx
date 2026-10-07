@@ -5,6 +5,7 @@ import { ChangelogModal } from '../../../ChangelogModal'
 import TourButton from 'frontend/components/Tour/TourButton'
 import { SIDEBAR_TOUR_ID } from '../SidebarTour'
 import './index.scss'
+import { downstreamVersion } from 'common/downstreamVersion'
 
 type Release = {
   html_url: string
@@ -58,7 +59,7 @@ export default React.memo(function HeroicVersion() {
   )[0]
   const shouldShowUpdates = newBeta || newStable
 
-  const version = heroicVersion
+  const version = downstreamVersion ?? heroicVersion
 
   return (
     <div className="heroicVersionContainer" data-tour="sidebar-version">
