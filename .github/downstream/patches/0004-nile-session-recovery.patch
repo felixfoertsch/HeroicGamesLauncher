@@ -1,0 +1,1360 @@
+From c9e1aec0c90688c22ead5e1c229839403cc309ee Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
+Date: Tue, 6 Oct 2026 22:21:02 +0200
+Subject: [PATCH] fix: Recover Amazon sessions, persist local logout despite
+ Nile failures
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Consolidate preserved Nile login work with missing-expiry recovery and local logout that survives helper failure. Preserve private encrypted backup during recovery; never log credentials. Automated checks: TypeScript, 55 Nile tests, build and Linux unpacked packaging. Felix reported logout/restart behavior working; no full game installation claimed.
+---
+ doc/nile-login.md                             |  61 +++++
+ .../storeManagers/nile/__tests__/auth.test.ts | 115 ++++++++
+ .../nile/__tests__/session.test.ts            |  56 ++++
+ .../storeManagers/nile/__tests__/user.test.ts | 259 ++++++++++++++++++
+ src/backend/storeManagers/nile/library.ts     |  33 ++-
+ src/backend/storeManagers/nile/session.ts     |  79 ++++++
+ src/backend/storeManagers/nile/user.ts        | 191 ++++++++-----
+ src/common/nileAuth.ts                        |  85 ++++++
+ src/common/types/nile.ts                      |   5 +-
+ src/frontend/screens/WebView/index.css        |   8 +
+ src/frontend/screens/WebView/index.tsx        | 189 ++++++++++---
+ 11 files changed, 966 insertions(+), 115 deletions(-)
+ create mode 100644 doc/nile-login.md
+ create mode 100644 src/backend/storeManagers/nile/__tests__/auth.test.ts
+ create mode 100644 src/backend/storeManagers/nile/__tests__/session.test.ts
+ create mode 100644 src/backend/storeManagers/nile/__tests__/user.test.ts
+ create mode 100644 src/backend/storeManagers/nile/session.ts
+ create mode 100644 src/common/nileAuth.ts
+
+diff --git a/doc/nile-login.md b/doc/nile-login.md
+new file mode 100644
+index 00000000..15557fdd
+--- /dev/null
++++ b/doc/nile-login.md
+@@ -0,0 +1,61 @@
++# Amazon / Nile login recovery
++
++This change fixes specific failure paths in Heroic's account-login integration.
++It does not change the Amazon storefront's cookies, bypass MFA, or modify Nile's
++Amazon API implementation.
++
++## Failure paths
++
++- Nile refuses `auth --login` when it already has a session. Previously Heroic
++  parsed the resulting empty stdout as JSON, and the UI never caught the failure.
++- Heroic relied on its own cached profile to decide whether to load Nile's
++  library. A valid CLI session could exist in Heroic's `NILE_CONFIG_PATH` while
++  that cache was empty. Session checks now re-read the local profile first.
++- Nile 1.2 uses `current_user.json`; older versions use nested customer data in
++  `user.json`. Both formats are read, copying only the public name and user ID.
++  An existing current-format file takes precedence over any legacy file.
++- Amazon can redirect away from its authorization callback before `dom-ready`.
++  Main-frame navigation/redirect events now supply the callback URL. Duplicate
++  events cannot submit the same authorization code twice.
++- Failed registration previously navigated to the account page as if successful.
++  It now displays an error with a fresh-attempt retry. Preparation also has a
++  30-second timeout, and results from abandoned attempts are ignored.
++
++Explicit logout clears current and legacy profile references even if Nile's remote deregistration fails, then awaits browser session cleanup. Encrypted credential files remain untouched by logout. Restart must not restore the account.
++
++Nile 1.2 legacy migration can omit expiry metadata. Recovery preserves a private encrypted backup and sets missing acquisition time to `1` (Unix epoch), forcing normal token refresh. Missing refresh credentials require fresh sign-in; recovery never fabricates credentials or extends token validity.
++
++Outside explicit logout, existing local sessions are reused, not logged out or deleted. Recovery reloads
++Heroic's renderer once to synchronize its cached account state. As with Nile's
++own session check, finding a local profile does not prove a token is still valid
++on Amazon's servers; library sync/launch remains responsible for token refresh.
++
++## Validation
++
++Regression tests are in `src/backend/storeManagers/nile/__tests__/` and use the
++existing Backend Jest project. They cover account restoration, both profile
++formats, damaged/missing profiles, preparation failures, helper arguments,
++registration failure handling, public-data filtering and callback validation.
++
++```sh
++pnpm codecheck
++pnpm test --runInBand
++pnpm lint
++pnpm prettier
++```
++
++A live Amazon sign-in cannot be verified by these mocked tests. On Linux, test:
++
++1. With no Amazon session, use **Manage Accounts > Amazon > Login**, complete
++   Amazon's password/MFA screens, and confirm the account and library appear.
++2. Restart Heroic and confirm that the account remains available. A pre-existing
++   CLI login must use Heroic's configured `NILE_CONFIG_PATH`, not a separate
++   system-wide Nile directory.
++3. Cancel/navigate away during preparation; no late response should redirect
++   you back. A missing/broken helper should show an error instead of spinning
++   indefinitely; Retry must start a fresh attempt.
++4. After an unsuccessful registration, confirm no false-success navigation.
++   Retry, log in, then verify Epic/GOG login and normal launch/install still work.
++
++Do not post passwords, authorization callback URLs, authentication tokens or
++raw Nile credential files in bug reports.
+diff --git a/src/backend/storeManagers/nile/__tests__/auth.test.ts b/src/backend/storeManagers/nile/__tests__/auth.test.ts
+new file mode 100644
+index 00000000..daec48bb
+--- /dev/null
++++ b/src/backend/storeManagers/nile/__tests__/auth.test.ts
+@@ -0,0 +1,115 @@
++import {
++  getAmazonAuthorizationCode,
++  parseNileLoginData,
++  parseNileUserData
++} from 'common/nileAuth'
++
++const loginData = {
++  url: 'https://amazon.com/ap/signin?openid.return_to=https%3A%2F%2Fwww.amazon.com',
++  client_id: 'test-client',
++  code_verifier: 'test-verifier',
++  serial: 'test-serial'
++}
++
++describe('Nile authentication data', () => {
++  it('extracts only public fields from a current profile', () => {
++    expect(
++      parseNileUserData({ name: 'Test', user_id: 'id', token: 'secret' })
++    ).toEqual({ name: 'Test', user_id: 'id' })
++  })
++
++  it('supports the pre-1.2 profile without copying tokens to Heroic', () => {
++    expect(
++      parseNileUserData(
++        {
++          extensions: {
++            customer_info: { given_name: 'Test', user_id: 'id' }
++          },
++          tokens: { bearer: { refresh_token: 'secret' } }
++        },
++        true
++      )
++    ).toEqual({ name: 'Test', user_id: 'id' })
++  })
++
++  it.each([null, [], {}, { name: 'Test' }, { name: 'Test', user_id: '' }])(
++    'rejects malformed current profiles: %j',
++    (profile) => {
++      expect(parseNileUserData(profile)).toBeUndefined()
++    }
++  )
++
++  it.each([{}, { extensions: null }, { extensions: { customer_info: [] } }])(
++    'rejects malformed legacy profiles: %j',
++    (profile) => {
++      expect(parseNileUserData(profile, true)).toBeUndefined()
++    }
++  )
++
++  it('parses valid helper output without modifying the verifier', () => {
++    expect(parseNileLoginData(JSON.stringify(loginData))).toEqual(loginData)
++  })
++
++  it.each(['', 'You are already logged in', 'null', '{bad json'])(
++    'rejects non-login output: %s',
++    (output) => {
++      expect(parseNileLoginData(output)).toBeUndefined()
++    }
++  )
++
++  it.each(['client_id', 'code_verifier', 'serial', 'url'])(
++    'rejects a missing %s',
++    (key) => {
++      expect(
++        parseNileLoginData(JSON.stringify({ ...loginData, [key]: '' }))
++      ).toBeUndefined()
++    }
++  )
++
++  it.each([
++    'http://amazon.com/ap/signin',
++    'https://amazon.com.attacker.example/ap/signin',
++    'https://user:password@amazon.com/ap/signin',
++    'javascript:alert(1)'
++  ])('rejects an unsafe login URL: %s', (url) => {
++    expect(
++      parseNileLoginData(JSON.stringify({ ...loginData, url }))
++    ).toBeUndefined()
++  })
++})
++
++describe('Amazon authorization redirects', () => {
++  it('extracts and URL-decodes a code from the requested return URL', () => {
++    expect(
++      getAmazonAuthorizationCode(
++        'https://www.amazon.com/?openid.oa2.authorization_code=a%2Bb%26c',
++        loginData.url
++      )
++    ).toBe('a+b&c')
++  })
++
++  it.each([
++    'https://www.amazon.com/?unrelated=value',
++    'https://www.amazon.com/?openid.oa2.authorization_code=',
++    'http://www.amazon.com/?openid.oa2.authorization_code=secret',
++    'https://www.amazon.com.attacker.example/?openid.oa2.authorization_code=secret',
++    'https://www.amazon.com/ap/signin?openid.oa2.authorization_code=secret',
++    'https://user@www.amazon.com/?openid.oa2.authorization_code=secret',
++    'about:blank',
++    'not a URL'
++  ])('ignores non-callback navigation: %s', (url) => {
++    expect(getAmazonAuthorizationCode(url, loginData.url)).toBeNull()
++  })
++
++  it('requires a valid expected return URL', () => {
++    expect(
++      getAmazonAuthorizationCode('https://www.amazon.com/?code=x', 'invalid')
++    ).toBeNull()
++    expect(
++      getAmazonAuthorizationCode(
++        'https://www.amazon.com/?openid.oa2.authorization_code=x',
++        'https://amazon.com/ap/signin'
++      )
++    ).toBeNull()
++  })
++})
+diff --git a/src/backend/storeManagers/nile/__tests__/session.test.ts b/src/backend/storeManagers/nile/__tests__/session.test.ts
+new file mode 100644
+index 00000000..08d351b6
+--- /dev/null
++++ b/src/backend/storeManagers/nile/__tests__/session.test.ts
+@@ -0,0 +1,56 @@
++import { createCipheriv, createDecipheriv, createHash } from 'crypto'
++import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from 'fs'
++import { tmpdir } from 'os'
++import { join } from 'path'
++import { recoverNileSession } from '../session'
++
++test('repairs migrated credentials, forces expiry, preserves private backup and is idempotent', () => {
++  const directory = mkdtempSync(join(tmpdir(), 'nile-session-'))
++  try {
++    const uid = 'synthetic-user'
++    writeFileSync(
++      join(directory, 'current_user.json'),
++      JSON.stringify({ user_id: uid })
++    )
++    const key = createHash('sha256').update(uid).digest()
++    const path = join(
++      directory,
++      `${createHash('md5').update(uid).digest('hex')}.enc`
++    )
++    const iv = Buffer.alloc(16, 7)
++    const ivCipher = createCipheriv('aes-256-ecb', key, null)
++    ivCipher.setAutoPadding(false)
++    const cipher = createCipheriv('aes-256-cbc', key, iv)
++    const data = {
++      tokens: { bearer: { refresh_token: 'synthetic', expires_in: 3600 } }
++    }
++    const original = Buffer.concat([
++      ivCipher.update(iv),
++      ivCipher.final(),
++      cipher.update(JSON.stringify(data)),
++      cipher.final()
++    ])
++    writeFileSync(path, original)
++    expect(recoverNileSession(directory)).toBe(true)
++    const encrypted = readFileSync(path)
++    const decryptIv = createDecipheriv('aes-256-ecb', key, null)
++    decryptIv.setAutoPadding(false)
++    const newIv = Buffer.concat([
++      decryptIv.update(encrypted.subarray(0, 16)),
++      decryptIv.final()
++    ])
++    const decrypt = createDecipheriv('aes-256-cbc', key, newIv)
++    const repaired = JSON.parse(
++      Buffer.concat([
++        decrypt.update(encrypted.subarray(16)),
++        decrypt.final()
++      ]).toString()
++    )
++    expect(repaired).toEqual({ ...data, NILE: { token_obtain_time: 1 } })
++    expect(readFileSync(`${path}.before-session-recovery`)).toEqual(original)
++    expect(statSync(`${path}.before-session-recovery`).mode & 0o777).toBe(0o600)
++    expect(recoverNileSession(directory)).toBe(false)
++  } finally {
++    rmSync(directory, { recursive: true, force: true })
++  }
++})
+diff --git a/src/backend/storeManagers/nile/__tests__/user.test.ts b/src/backend/storeManagers/nile/__tests__/user.test.ts
+new file mode 100644
+index 00000000..6dbb9e5e
+--- /dev/null
++++ b/src/backend/storeManagers/nile/__tests__/user.test.ts
+@@ -0,0 +1,259 @@
++import { existsSync, readFileSync, rmSync } from 'graceful-fs'
++import { session } from 'electron'
++import { libraryManagerMap } from '../..'
++import { configStore } from '../electronStores'
++import { NileUser } from '../user'
++import { logError } from 'backend/logger'
++
++jest.mock('../..', () => ({
++  libraryManagerMap: { nile: { runRunnerCommand: jest.fn() } }
++}))
++jest.mock('../electronStores', () => ({
++  configStore: { set: jest.fn(), delete: jest.fn(), get_nodefault: jest.fn() }
++}))
++jest.mock('../constants', () => ({
++  nileConfigPath: '/heroic/nile_config/nile',
++  nileUserData: '/heroic/nile_config/nile/current_user.json'
++}))
++jest.mock('graceful-fs', () => ({
++  existsSync: jest.fn(),
++  readFileSync: jest.fn(),
++  rmSync: jest.fn()
++}))
++jest.mock('backend/utils', () => ({ clearCache: jest.fn() }))
++jest.mock('backend/logger', () => ({
++  LogPrefix: { Nile: 'Nile' },
++  logDebug: jest.fn(),
++  logInfo: jest.fn(),
++  logError: jest.fn()
++}))
++jest.mock('electron', () => ({ session: { fromPartition: jest.fn() } }))
++
++const currentPath = '/heroic/nile_config/nile/current_user.json'
++const legacyPath = '/heroic/nile_config/nile/user.json'
++const user = { name: 'Test', user_id: 'test-id' }
++const registerData = {
++  code: 'test-code',
++  client_id: 'test-client',
++  code_verifier: 'test-verifier',
++  serial: 'test-serial'
++}
++const loginData = {
++  url: 'https://amazon.com/ap/signin?openid.return_to=https%3A%2F%2Fwww.amazon.com',
++  client_id: 'test-client',
++  code_verifier: 'test-verifier',
++  serial: 'test-serial'
++}
++const runCommand = jest.mocked(libraryManagerMap.nile.runRunnerCommand)
++const files = new Map<string, string>()
++
++beforeEach(() => {
++  jest.clearAllMocks()
++  files.clear()
++  jest.mocked(existsSync).mockImplementation((path) => files.has(String(path)))
++  jest.mocked(readFileSync).mockImplementation((path) => {
++    const contents = files.get(String(path))
++    if (contents === undefined) throw new Error('File not found')
++    return contents
++  })
++  runCommand.mockReset()
++  runCommand.mockResolvedValue({ stdout: '', stderr: '' })
++})
++
++describe('Nile logout', () => {
++  it('does not restore the account after a helper failure and restart', async () => {
++    files.set(currentPath, JSON.stringify(user))
++    files.set(
++      legacyPath,
++      JSON.stringify({
++        extensions: {
++          customer_info: { given_name: 'Test', user_id: 'test-id' }
++        }
++      })
++    )
++    jest.mocked(rmSync).mockImplementation((path) => {
++      files.delete(String(path))
++    })
++    const browser = {
++      clearStorageData: jest.fn().mockResolvedValue(undefined),
++      clearCache: jest.fn().mockResolvedValue(undefined),
++      clearAuthCache: jest.fn().mockResolvedValue(undefined)
++    }
++    jest
++      .mocked(session.fromPartition)
++      .mockReturnValue(browser as unknown as Electron.Session)
++    runCommand.mockResolvedValue({
++      stdout: '',
++      stderr: '',
++      error: 'KeyError: NILE'
++    })
++    await NileUser.logout()
++    expect(NileUser.isLoggedIn()).toBe(false)
++    expect(browser.clearStorageData).toHaveBeenCalled()
++    expect(browser.clearAuthCache).toHaveBeenCalled()
++    expect(configStore.delete).toHaveBeenCalledWith('userData')
++  })
++})
++
++describe('Nile session detection', () => {
++  it('rehydrates a valid CLI session when the Heroic cache is empty', () => {
++    files.set(currentPath, JSON.stringify(user))
++    expect(NileUser.isLoggedIn()).toEqual(user)
++    expect(configStore.set).toHaveBeenCalledWith('userData', user)
++    expect(runCommand).not.toHaveBeenCalled()
++  })
++
++  it('reads a legacy profile without exposing its tokens', () => {
++    files.set(
++      legacyPath,
++      JSON.stringify({
++        extensions: {
++          customer_info: { given_name: 'Test', user_id: 'test-id' }
++        },
++        tokens: { bearer: { refresh_token: 'secret' } }
++      })
++    )
++    expect(NileUser.getUserData()).toEqual(user)
++    expect(configStore.set).toHaveBeenCalledWith('userData', user)
++  })
++
++  it('does not revive legacy data over an invalid current profile', () => {
++    files.set(currentPath, '{}')
++    files.set(
++      legacyPath,
++      JSON.stringify({
++        extensions: {
++          customer_info: { given_name: 'Test', user_id: 'test-id' }
++        }
++      })
++    )
++    expect(NileUser.isLoggedIn()).toBe(false)
++    expect(configStore.set).not.toHaveBeenCalled()
++  })
++
++  it('clears stale cached identity after the local session is removed', () => {
++    files.set(currentPath, JSON.stringify(user))
++    expect(NileUser.isLoggedIn()).toEqual(user)
++    files.clear()
++    expect(NileUser.isLoggedIn()).toBe(false)
++    expect(configStore.delete).toHaveBeenCalledWith('userData')
++  })
++
++  it('handles corrupt JSON without exposing its contents', () => {
++    files.set(currentPath, '{secret-token')
++    expect(NileUser.getUserData()).toBeUndefined()
++    expect(JSON.stringify(jest.mocked(logError).mock.calls)).not.toContain(
++      'secret-token'
++    )
++  })
++})
++
++describe('Nile login preparation', () => {
++  it('resumes existing sessions without requesting an auth URL', async () => {
++    files.set(currentPath, JSON.stringify(user))
++    await expect(NileUser.getLoginData()).resolves.toEqual({ user })
++    expect(runCommand).not.toHaveBeenCalled()
++  })
++
++  it('returns fresh login data when signed out', async () => {
++    runCommand.mockResolvedValue({
++      stdout: JSON.stringify(loginData),
++      stderr: ''
++    })
++    await expect(NileUser.getLoginData()).resolves.toEqual(loginData)
++    expect(runCommand).toHaveBeenCalledWith(
++      ['auth', '--login', '--non-interactive'],
++      expect.objectContaining({ abortId: 'nile-auth' })
++    )
++  })
++
++  it('recognizes a session migrated by Nile during preparation', async () => {
++    runCommand.mockImplementation(async () => {
++      files.set(currentPath, JSON.stringify(user))
++      return { stdout: '', stderr: 'You are already logged in' }
++    })
++    await expect(NileUser.getLoginData()).resolves.toEqual({ user })
++  })
++
++  it.each([
++    { stdout: '', stderr: 'some error' },
++    { stdout: '{broken', stderr: '' },
++    { stdout: '{}', stderr: '' },
++    { stdout: '', stderr: '', abort: true },
++    { stdout: '', stderr: '', error: 'helper unavailable' }
++  ])('rejects failed preparation with a safe message: %j', async (result) => {
++    runCommand.mockResolvedValue(result)
++    await expect(NileUser.getLoginData()).rejects.toThrow(
++      'Could not prepare Amazon login'
++    )
++  })
++})
++
++describe('Nile registration', () => {
++  it('accepts saved profiles independently of log wording', async () => {
++    runCommand.mockImplementation(async () => {
++      files.set(currentPath, JSON.stringify(user))
++      return { stdout: '', stderr: 'Registered successfully' }
++    })
++    await expect(NileUser.login(registerData)).resolves.toEqual({
++      status: 'done',
++      user
++    })
++    expect(runCommand).toHaveBeenCalledWith(
++      [
++        'register',
++        '--code',
++        registerData.code,
++        '--code-verifier',
++        registerData.code_verifier,
++        '--serial',
++        registerData.serial,
++        '--client-id',
++        registerData.client_id
++      ],
++      expect.objectContaining({ abortId: 'nile-login' })
++    )
++  })
++
++  it('rejects success logs without a saved profile', async () => {
++    runCommand.mockResolvedValue({
++      stdout: '',
++      stderr: '[AUTH_MANAGER]: Succesfully registered a device'
++    })
++    await expect(NileUser.login(registerData)).resolves.toEqual({
++      status: 'failed',
++      user: undefined
++    })
++  })
++
++  it.each([{ abort: true }, { error: 'failed' }])(
++    'does not accept aborted/failed commands: %j',
++    async (failure) => {
++      files.set(currentPath, JSON.stringify(user))
++      runCommand.mockResolvedValue({ stdout: '', stderr: '', ...failure })
++      expect((await NileUser.login(registerData)).status).toBe('failed')
++    }
++  )
++
++  it('does not send incomplete registration data to Nile', async () => {
++    expect((await NileUser.login({ ...registerData, code: '' })).status).toBe(
++      'failed'
++    )
++    expect(runCommand).not.toHaveBeenCalled()
++  })
++
++  it('handles helper rejection without exposing its arguments', async () => {
++    runCommand.mockRejectedValue(new Error('command contained secret-code'))
++    expect((await NileUser.login(registerData)).status).toBe('failed')
++    expect(JSON.stringify(jest.mocked(logError).mock.calls)).not.toContain(
++      'secret-code'
++    )
++  })
++
++  it('redacts partial JSON authentication output', async () => {
++    await NileUser.login(registerData)
++    const sanitize = runCommand.mock.calls[0][1]?.logSanitizer
++    expect(sanitize).toBeDefined()
++    expect(sanitize?.('{"access_token":"secret')).not.toContain('secret')
++  })
++})
+diff --git a/src/backend/storeManagers/nile/library.ts b/src/backend/storeManagers/nile/library.ts
+index caa02928..68bdf078 100644
+--- a/src/backend/storeManagers/nile/library.ts
++++ b/src/backend/storeManagers/nile/library.ts
+@@ -24,6 +24,7 @@ import { copySync } from 'fs-extra'
+ import { NileUser } from './user'
+ import { runNileCommandStub } from './e2eMock'
+ import { nileConfigPath, nileInstalled, nileLibrary } from './constants'
++import { recoverNileSession } from './session'
+ import NileGame from './games'
+ import type { LibraryManager } from 'common/types/game_manager'
+ 
+@@ -37,7 +38,7 @@ export default class NileLibraryManager implements LibraryManager {
+     const globalNileConfig = join(app.getPath('appData'), 'nile')
+     if (!existsSync(nileConfigPath) && existsSync(globalNileConfig)) {
+       copySync(globalNileConfig, nileConfigPath)
+-      await NileUser.getUserData()
++      NileUser.getUserData()
+     }
+ 
+     this.refresh()
+@@ -333,12 +334,19 @@ export default class NileLibraryManager implements LibraryManager {
+     if (game) {
+       const metadata = this.installedGames.get(appName)
+       // Get size info from Nile
+-      const { stdout: output } = await this.runRunnerCommand(
++      const result = await this.runRunnerCommand(
+         ['install', '--info', '--json', appName],
+         { abortId: appName }
+       )
+-
+-      const { download_size }: NileGameDownloadInfo = JSON.parse(output)
++      if (result.error || result.abort || !result.stdout.trim()) {
++        throw new Error(
++          'Could not get Amazon install info; sign in again and retry'
++        )
++      }
++      const { download_size }: NileGameDownloadInfo = JSON.parse(result.stdout)
++      if (!Number.isFinite(download_size) || download_size < 0) {
++        throw new Error('Nile returned invalid Amazon download size')
++      }
+       const installInfo = {
+         game: {
+           id: appName,
+@@ -469,6 +477,23 @@ export default class NileLibraryManager implements LibraryManager {
+       return runNileCommandStub(commandParts)
+     }
+ 
++    try {
++      if (!['auth', 'register'].includes(commandParts[0])) {
++        recoverNileSession(nileConfigPath)
++      }
++    } catch {
++      // Credential-bearing parsing errors must never reach logs.
++      logError(
++        'Could not recover Amazon session; sign in again',
++        LogPrefix.Nile
++      )
++      return {
++        stdout: '',
++        stderr: '',
++        error: 'Could not recover Amazon session; sign in again'
++      }
++    }
++
+     const { dir, bin } = getNileBin()
+ 
+     // Set NILE_CONFIG_PATH to a custom, Heroic-specific location so user-made
+diff --git a/src/backend/storeManagers/nile/session.ts b/src/backend/storeManagers/nile/session.ts
+new file mode 100644
+index 00000000..f8327cda
+--- /dev/null
++++ b/src/backend/storeManagers/nile/session.ts
+@@ -0,0 +1,79 @@
++import {
++  createCipheriv,
++  createDecipheriv,
++  createHash,
++  randomBytes
++} from 'crypto'
++import {
++  existsSync,
++  readFileSync,
++  writeFileSync,
++  renameSync,
++  copyFileSync,
++  chmodSync,
++  constants
++} from 'fs'
++import { join } from 'path'
++
++function record(value: unknown): Record<string, unknown> {
++  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
++    throw new Error('Invalid Amazon session structure')
++  }
++  return value as Record<string, unknown>
++}
++
++/** Repair Nile 1.2's legacy migration without exporting credentials or renewing their age. */
++export function recoverNileSession(directory: string): boolean {
++  const profile = join(directory, 'current_user.json')
++  if (!existsSync(profile)) return false
++  const { user_id } = record(
++    JSON.parse(readFileSync(profile, 'utf8')) as unknown
++  )
++  if (typeof user_id !== 'string' || !user_id.trim()) return false
++  const key = createHash('sha256').update(user_id).digest()
++  const path = join(
++    directory,
++    `${createHash('md5').update(user_id).digest('hex')}.enc`
++  )
++  if (!existsSync(path)) return false
++  const encrypted = readFileSync(path)
++  const ivCipher = createDecipheriv('aes-256-ecb', key, null)
++  ivCipher.setAutoPadding(false)
++  const iv = Buffer.concat([
++    ivCipher.update(encrypted.subarray(0, 16)),
++    ivCipher.final()
++  ])
++  const cipher = createDecipheriv('aes-256-cbc', key, iv)
++  const data = record(
++    JSON.parse(
++      Buffer.concat([
++        cipher.update(encrypted.subarray(16)),
++        cipher.final()
++      ]).toString('utf8')
++    ) as unknown
++  )
++  const metadata = data.NILE === undefined ? {} : record(data.NILE)
++  if (metadata.token_obtain_time !== undefined) return false
++  const bearer = record(record(data.tokens).bearer)
++  if (typeof bearer.refresh_token !== 'string' || !bearer.refresh_token) {
++    throw new Error('Amazon session needs sign-in')
++  }
++  data.NILE = { ...metadata, token_obtain_time: 1 }
++  const nextIv = randomBytes(16)
++  const encryptIv = createCipheriv('aes-256-ecb', key, null)
++  encryptIv.setAutoPadding(false)
++  const encrypt = createCipheriv('aes-256-cbc', key, nextIv)
++  const output = Buffer.concat([
++    encryptIv.update(nextIv),
++    encryptIv.final(),
++    encrypt.update(JSON.stringify(data)),
++    encrypt.final()
++  ])
++  const backup = `${path}.before-session-recovery`
++  if (!existsSync(backup)) copyFileSync(path, backup, constants.COPYFILE_EXCL)
++  chmodSync(backup, 0o600)
++  const temporary = `${path}.recovery-${process.pid}`
++  writeFileSync(temporary, output, { mode: 0o600, flag: 'wx' })
++  renameSync(temporary, path)
++  return true
++}
+diff --git a/src/backend/storeManagers/nile/user.ts b/src/backend/storeManagers/nile/user.ts
+index 28c7436a..b06dc2dc 100644
+--- a/src/backend/storeManagers/nile/user.ts
++++ b/src/backend/storeManagers/nile/user.ts
+@@ -4,129 +4,170 @@ import {
+   NileRegisterData,
+   NileUserData
+ } from 'common/types/nile'
++import { parseNileLoginData, parseNileUserData } from 'common/nileAuth'
+ import { libraryManagerMap } from '..'
+-import { existsSync, readFileSync } from 'graceful-fs'
++import { existsSync, readFileSync, rmSync } from 'graceful-fs'
+ import { configStore } from './electronStores'
+ import { clearCache } from 'backend/utils'
+-import { nileUserData } from './constants'
++import { nileConfigPath, nileUserData } from './constants'
+ import { session } from 'electron'
++import { join } from 'path'
+ 
+-function authLogSanitizer(line: string) {
+-  try {
+-    const output = JSON.parse(line)
+-    output.url = '<redacted>'
+-    output.code_verifier = '<redacted>'
+-    output.serial = '<redacted>'
+-    output.client_id = '<redacted>'
+-    return JSON.stringify(output) + '\n'
+-  } catch {
+-    return line
+-  }
++function authLogSanitizer() {
++  // Output can contain authorization codes, PKCE verifiers and bearer tokens,
++  // including partial JSON chunks that cannot be safely parsed for redaction.
++  return '<redacted Nile authentication output>\n'
+ }
+ 
+ export class NileUser {
+   static async getLoginData(): Promise<NileLoginData> {
++    // Nile refuses `auth --login` when a session already exists. Heroic's
++    // electron-store cache may have been cleared independently of that session.
++    const existingUser = this.getUserData()
++    if (existingUser) return { user: existingUser }
++
+     logDebug('Getting login data from Nile', LogPrefix.Nile)
+-    const { stdout } = await libraryManagerMap['nile'].runRunnerCommand(
++    const result = await libraryManagerMap['nile'].runRunnerCommand(
+       ['auth', '--login', '--non-interactive'],
+       {
+         abortId: 'nile-auth',
+         logSanitizer: authLogSanitizer
+       }
+     )
+-    const output: NileLoginData = JSON.parse(stdout)
++    if (result.abort || result.error) {
++      throw new Error('Could not prepare Amazon login')
++    }
++
++    const output = parseNileLoginData(result.stdout)
++    if (output) return output
++
++    // Starting Nile can migrate a legacy session to current_user.json.
++    const migratedUser = this.getUserData()
++    if (migratedUser) return { user: migratedUser }
+ 
+-    logInfo(['Register data is:', output], LogPrefix.Nile)
+-    return output
++    logError('Nile did not return valid Amazon login data', LogPrefix.Nile)
++    throw new Error('Could not prepare Amazon login')
+   }
+ 
+   static async login(
+     data: NileRegisterData
+   ): Promise<{ status: 'done' | 'failed'; user: NileUserData | undefined }> {
+-    logDebug(['Got register data:', data], LogPrefix.Nile)
++    const failed = { status: 'failed' as const, user: undefined }
+     const { code, code_verifier, serial, client_id } = data
+-    // Nile prints output to stderr
+-    const { stderr: output } = await libraryManagerMap['nile'].runRunnerCommand(
+-      [
+-        'register',
+-        '--code',
+-        code,
+-        '--code-verifier',
+-        code_verifier,
+-        '--serial',
+-        serial,
+-        '--client-id',
+-        client_id
+-      ],
+-      { abortId: 'nile-login' }
+-    )
+-
+-    const successRegex = /\[AUTH_MANAGER]:.*Succesfully registered a device/
+-    if (!successRegex.test(output)) {
+-      // Authentication failed
+-      logError(['Authentication failed:', output], LogPrefix.Nile)
+-      return {
+-        status: 'failed',
+-        user: undefined
+-      }
++    if (
++      ![code, code_verifier, serial, client_id].every(
++        (value) => typeof value === 'string' && value.trim().length > 0
++      )
++    ) {
++      return failed
+     }
+ 
+-    logInfo('Authentication successful', LogPrefix.Nile)
+-    const user = await this.getUserData()
+-    if (!user) {
+-      return {
+-        status: 'failed',
+-        user: undefined
++    try {
++      const result = await libraryManagerMap['nile'].runRunnerCommand(
++        [
++          'register',
++          '--code',
++          code,
++          '--code-verifier',
++          code_verifier,
++          '--serial',
++          serial,
++          '--client-id',
++          client_id
++        ],
++        { abortId: 'nile-login', logSanitizer: authLogSanitizer }
++      )
++      if (result.abort || result.error) return failed
++
++      // Human-readable log messages are not an authentication API. A valid
++      // profile written by Nile is required, even when its output says success.
++      const user = this.getUserData()
++      if (!user) {
++        logError('Nile did not save an Amazon user profile', LogPrefix.Nile)
++        return failed
+       }
+-    }
+ 
+-    return {
+-      status: 'done',
+-      user
++      logInfo('Authentication successful', LogPrefix.Nile)
++      return { status: 'done', user }
++    } catch {
++      // Helper errors can embed command arguments or token-bearing output.
++      logError('Amazon authentication failed', LogPrefix.Nile)
++      return failed
+     }
+   }
+ 
+   static async logout() {
+     const commandParts = ['auth', '--logout']
+ 
+-    const res = await libraryManagerMap['nile'].runRunnerCommand(commandParts, {
+-      abortId: 'nile-logout'
+-    })
+-
+-    if (res.abort) {
+-      logError('Failed to logout: abort by user', LogPrefix.Nile)
+-      return
++    try {
++      const res = await libraryManagerMap['nile'].runRunnerCommand(
++        commandParts,
++        {
++          abortId: 'nile-logout',
++          logSanitizer: authLogSanitizer
++        }
++      )
++      if (res.abort || res.error) {
++        logError(
++          'Amazon remote deregistration failed; signing out locally',
++          LogPrefix.Nile
++        )
++      }
++    } catch {
++      logError(
++        'Amazon remote deregistration failed; signing out locally',
++        LogPrefix.Nile
++      )
+     }
+ 
++    // A broken helper must not resurrect the account after restart. Remove both
++    // profile formats; retain encrypted credentials rather than deleting user data.
++    rmSync(nileUserData, { force: true })
++    rmSync(join(nileConfigPath, 'user.json'), { force: true })
+     configStore.delete('userData')
+     clearCache('nile')
+     const ses = session.fromPartition('persist:amazon')
+-    ses.clearStorageData().catch(() => {})
+-    ses.clearCache().catch(() => {})
+-    ses.clearAuthCache().catch(() => {})
++    const results = await Promise.allSettled([
++      ses.clearStorageData(),
++      ses.clearCache(),
++      ses.clearAuthCache()
++    ])
++    if (results.some((result) => result.status === 'rejected')) {
++      logError('Could not fully clear Amazon browser session', LogPrefix.Nile)
++    }
+   }
+ 
+-  static async getUserData(): Promise<NileUserData | undefined> {
+-    if (!existsSync(nileUserData)) {
+-      logError('user.json does not exist', LogPrefix.Nile)
++  static getUserData(): NileUserData | undefined {
++    // Nile < 1.2 stores customer_info in user.json. Newer Nile stores only the
++    // public profile in current_user.json; it is authoritative when present.
++    const legacy = !existsSync(nileUserData)
++    const path = legacy ? join(nileConfigPath, 'user.json') : nileUserData
++    if (!existsSync(path)) {
+       configStore.delete('userData')
+       return
+     }
+ 
+-    const user: NileUserData = JSON.parse(readFileSync(nileUserData, 'utf-8'))
+-    if (!Object.keys(user).length) {
+-      logInfo('user.json is empty', LogPrefix.Nile)
+-      configStore.delete('userData')
+-      return
++    try {
++      const user = parseNileUserData(
++        JSON.parse(readFileSync(path, 'utf-8')),
++        legacy
++      )
++      if (user) {
++        configStore.set('userData', user)
++        return user
++      }
++    } catch {
++      // A damaged profile should not crash startup or leak its contents.
++      logError('Could not read the Nile user profile', LogPrefix.Nile)
+     }
+ 
+-    configStore.set('userData', user)
+-    logInfo('Saved user data to config file', LogPrefix.Nile)
+-
+-    return user
++    configStore.delete('userData')
++    return
+   }
+ 
+   public static isLoggedIn() {
+-    return configStore.get_nodefault('userData') || false
++    // Rehydrate the cache before the initial library refresh, including when
++    // the user authenticated with the CLI in Heroic's NILE_CONFIG_PATH.
++    return this.getUserData() || false
+   }
+ }
+diff --git a/src/common/nileAuth.ts b/src/common/nileAuth.ts
+new file mode 100644
+index 00000000..8a8de3eb
+--- /dev/null
++++ b/src/common/nileAuth.ts
+@@ -0,0 +1,85 @@
++import type { NileLoginUrl, NileUserData } from './types/nile'
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === 'object' && value !== null && !Array.isArray(value)
++}
++
++function isNonEmptyString(value: unknown): value is string {
++  return typeof value === 'string' && value.trim().length > 0
++}
++
++/** Return only public profile fields, never Nile's stored authentication tokens. */
++export function parseNileUserData(
++  value: unknown,
++  legacy = false
++): NileUserData | undefined {
++  if (!isRecord(value)) return
++  if (legacy) {
++    if (!isRecord(value.extensions)) return
++    value = value.extensions.customer_info
++    if (!isRecord(value)) return
++  }
++
++  const name = legacy ? value.given_name : value.name
++  const user_id = value.user_id
++  if (!isNonEmptyString(name) || !isNonEmptyString(user_id)) return
++  return { name, user_id }
++}
++
++/** Invalid/empty helper output must not be used as a webview URL. */
++export function parseNileLoginData(output: string): NileLoginUrl | undefined {
++  try {
++    const data: unknown = JSON.parse(output)
++    if (!isRecord(data)) return
++    const { url, code_verifier, serial, client_id } = data
++    if (
++      !isNonEmptyString(url) ||
++      !isNonEmptyString(code_verifier) ||
++      !isNonEmptyString(serial) ||
++      !isNonEmptyString(client_id)
++    ) {
++      return
++    }
++    const parsed = new URL(url)
++    if (
++      parsed.protocol !== 'https:' ||
++      !['amazon.com', 'www.amazon.com'].includes(parsed.hostname) ||
++      parsed.username ||
++      parsed.password ||
++      parsed.port
++    ) {
++      return
++    }
++    return { url, code_verifier, serial, client_id }
++  } catch {
++    // JSON/URL errors can contain credentials; do not log the input or error.
++    return
++  }
++}
++
++/** Only consume codes from the return URL requested by this login attempt. */
++export function getAmazonAuthorizationCode(
++  pageUrl: string,
++  loginUrl: string
++): string | null {
++  try {
++    const returnTo = new URL(loginUrl).searchParams.get('openid.return_to')
++    if (!returnTo) return null
++    const expected = new URL(returnTo)
++    const actual = new URL(pageUrl)
++    if (
++      expected.protocol !== 'https:' ||
++      !['amazon.com', 'www.amazon.com'].includes(expected.hostname) ||
++      actual.origin !== expected.origin ||
++      actual.pathname !== expected.pathname ||
++      actual.username ||
++      actual.password
++    ) {
++      return null
++    }
++    const code = actual.searchParams.get('openid.oa2.authorization_code')
++    return isNonEmptyString(code) ? code : null
++  } catch {
++    return null
++  }
++}
+diff --git a/src/common/types/nile.ts b/src/common/types/nile.ts
+index a0a6a1a5..51fac215 100644
+--- a/src/common/types/nile.ts
++++ b/src/common/types/nile.ts
+@@ -106,13 +106,16 @@ export interface NileUserData {
+   name: string
+ }
+ 
+-export interface NileLoginData {
++export interface NileLoginUrl {
+   url: string
+   code_verifier: string
+   serial: string
+   client_id: string
+ }
+ 
++// Login preparation can discover a session already authenticated by Nile.
++export type NileLoginData = NileLoginUrl | { user: NileUserData }
++
+ export interface NileRegisterData {
+   code: string
+   code_verifier: string
+diff --git a/src/frontend/screens/WebView/index.css b/src/frontend/screens/WebView/index.css
+index 404db3e1..9e08ea26 100644
+--- a/src/frontend/screens/WebView/index.css
++++ b/src/frontend/screens/WebView/index.css
+@@ -29,4 +29,12 @@
+   &:has(.UpdateComponent) .WebView__webview {
+     display: none;
+   }
++
++  .WebView__loginError {
++    padding: var(--space-lg);
++
++    button {
++      margin-inline-end: var(--space-sm);
++    }
++  }
+ }
+diff --git a/src/frontend/screens/WebView/index.tsx b/src/frontend/screens/WebView/index.tsx
+index 3e45bc40..97830c6b 100644
+--- a/src/frontend/screens/WebView/index.tsx
++++ b/src/frontend/screens/WebView/index.tsx
+@@ -3,6 +3,7 @@ import {
+   useContext,
+   useEffect,
+   useLayoutEffect,
++  useRef,
+   useState
+ } from 'react'
+ import { useTranslation } from 'react-i18next'
+@@ -18,7 +19,8 @@ import {
+ } from 'frontend/helpers/gamepad'
+ import './index.css'
+ import LoginWarning from '../Login/components/LoginWarning'
+-import { NileLoginData } from 'common/types/nile'
++import { NileLoginUrl } from 'common/types/nile'
++import { getAmazonAuthorizationCode } from 'common/nileAuth'
+ import {
+   Dialog,
+   DialogContent,
+@@ -52,9 +54,14 @@ export default function WebView() {
+     refresh: true,
+     message: t('loading.website', 'Loading Website')
+   }))
+-  const [amazonLoginData, setAmazonLoginData] = useState<NileLoginData | null>(
++  const [amazonLoginData, setAmazonLoginData] = useState<NileLoginUrl | null>(
+     null
+   )
++  const [amazonLoginError, setAmazonLoginError] = useState<string | null>(null)
++  const [amazonLoginAttempt, setAmazonLoginAttempt] = useState(0)
++  const amazonLoginGeneration = useRef(0)
++  const handledAmazonCode = useRef<string | null>(null)
++  const amazonLoginInProgress = useRef(false)
+   const navigate = useNavigate()
+   // Keep the webview element in state (via a callback ref) instead of a plain
+   // ref so that mounting/remounting it — e.g. when switching stores — triggers
+@@ -124,41 +131,107 @@ export default function WebView() {
+ 
+   useEffect(() => {
+     if (pathname !== '/loginweb/nile') return
+-    console.log('Loading amazon login data')
+-
++    const generation = ++amazonLoginGeneration.current
++    let active = true
++    handledAmazonCode.current = null
++    amazonLoginInProgress.current = false
++    setAmazonLoginData(null)
++    setAmazonLoginError(null)
+     setLoading({
+       refresh: true,
+       message: t('status.preparing_login', 'Preparing Login...')
+     })
+-    amazon.getLoginData().then((data) => {
+-      setAmazonLoginData(data)
+-      setLoading({
+-        ...loading,
+-        refresh: false
++
++    const fail = () => {
++      setAmazonLoginError(
++        t(
++          'amazon-login.prepare-error',
++          'Could not prepare Amazon login. Check your connection and Nile executable, then retry.'
++        )
++      )
++      setLoading((current) => ({ ...current, refresh: false }))
++    }
++    const timeout = window.setTimeout(() => {
++      if (!active) return
++      active = false
++      window.api.abort('nile-auth')
++      fail()
++    }, 30000)
++
++    void amazon
++      .getLoginData()
++      .then((data) => {
++        if (!active || generation !== amazonLoginGeneration.current) return
++        if ('user' in data) {
++          // Nile's profile has rehydrated the backend cache. Reload the renderer
++          // so GlobalState also picks up the recovered account and its library.
++          navigate('/login', { replace: true })
++          window.location.reload()
++          return
++        }
++        setAmazonLoginData(data)
++        setLoading({
++          refresh: true,
++          message: t('loading.website', 'Loading Website')
++        })
+       })
+-    })
+-  }, [pathname])
++      .catch(() => {
++        if (active) fail()
++      })
++      .finally(() => window.clearTimeout(timeout))
++
++    return () => {
++      active = false
++      amazonLoginGeneration.current++
++      amazonLoginInProgress.current = false
++      window.clearTimeout(timeout)
++    }
++  }, [pathname, amazonLoginAttempt])
+ 
+   const handleAmazonLogin = (code: string) => {
+-    if (!amazonLoginData) {
+-      console.error('Could not login to Amazon because login data is missing')
++    if (
++      !amazonLoginData ||
++      amazonLoginInProgress.current ||
++      handledAmazonCode.current === code
++    ) {
+       return
+     }
+-
++    const generation = amazonLoginGeneration.current
++    handledAmazonCode.current = code
++    amazonLoginInProgress.current = true
++    setAmazonLoginError(null)
+     setLoading({
+       refresh: true,
+       message: t('status.logging', 'Logging In...')
+     })
+-    amazon
++
++    void amazon
+       .login({
+         client_id: amazonLoginData.client_id,
+-        code: code,
++        code,
+         code_verifier: amazonLoginData.code_verifier,
+         serial: amazonLoginData.serial
+       })
+-      .then(() => {
++      .then((status) => {
++        if (generation !== amazonLoginGeneration.current) return
++        if (status !== 'done') throw new Error('Amazon login failed')
+         handleSuccessfulLogin()
+       })
++      .catch(() => {
++        if (generation !== amazonLoginGeneration.current) return
++        setAmazonLoginError(
++          t(
++            'amazon-login.register-error',
++            'Amazon login could not be completed. Retry to start a new sign-in attempt.'
++          )
++        )
++        setLoading((current) => ({ ...current, refresh: false }))
++      })
++      .finally(() => {
++        if (generation === amazonLoginGeneration.current) {
++          amazonLoginInProgress.current = false
++        }
++      })
+   }
+ 
+   const handleSuccessfulLogin = () => {
+@@ -178,7 +251,9 @@ export default function WebView() {
+   useLayoutEffect(() => {
+     if (webview) {
+       const loadstop = () => {
+-        setLoading({ ...loading, refresh: false })
++        if (!amazonLoginInProgress.current) {
++          setLoading((current) => ({ ...current, refresh: false }))
++        }
+         const userAgent =
+           startUrl === epicLoginUrl
+             ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) EpicGamesLauncher'
+@@ -212,15 +287,12 @@ export default function WebView() {
+               gog.login(code).then(() => handleSuccessfulLogin())
+             }
+           }
+-        } else if (runner === 'nile') {
+-          const pageURL = webview.getURL()
+-          const parsedURL = new URL(pageURL)
+-          const code = parsedURL.searchParams.get(
+-            'openid.oa2.authorization_code'
++        } else if (runner === 'nile' && amazonLoginData) {
++          const code = getAmazonAuthorizationCode(
++            webview.getURL(),
++            amazonLoginData.url
+           )
+-          if (code) {
+-            handleAmazonLogin(code)
+-          }
++          if (code) handleAmazonLogin(code)
+         } else if (runner == 'legendary') {
+           const pageUrl = webview.getURL()
+           const parsedUrl = new URL(pageUrl)
+@@ -259,6 +331,27 @@ export default function WebView() {
+         }
+       }
+ 
++      const onAmazonNavigate = (event: {
++        url: string
++        isMainFrame?: boolean
++      }) => {
++        if (
++          runner !== 'nile' ||
++          !amazonLoginData ||
++          event.isMainFrame === false
++        ) {
++          return
++        }
++        const code = getAmazonAuthorizationCode(event.url, amazonLoginData.url)
++        if (code) handleAmazonLogin(code)
++      }
++
++      // The landing page can redirect again before dom-ready. Consume the
++      // main-frame callback URL from the navigation event instead of getURL().
++      webview.addEventListener('did-start-navigation', onAmazonNavigate)
++      webview.addEventListener('did-redirect-navigation', onAmazonNavigate)
++      webview.addEventListener('did-navigate', onAmazonNavigate)
++      webview.addEventListener('did-navigate-in-page', onAmazonNavigate)
+       webview.addEventListener('dom-ready', loadstop)
+       webview.addEventListener('did-fail-load', onerror)
+       // if the page title changed it's because the store loaded so there's
+@@ -271,6 +364,10 @@ export default function WebView() {
+       webview.addEventListener('page-title-updated', updateConnectivity)
+ 
+       return () => {
++        webview.removeEventListener('did-start-navigation', onAmazonNavigate)
++        webview.removeEventListener('did-redirect-navigation', onAmazonNavigate)
++        webview.removeEventListener('did-navigate', onAmazonNavigate)
++        webview.removeEventListener('did-navigate-in-page', onAmazonNavigate)
+         webview.removeEventListener('dom-ready', loadstop)
+         webview.removeEventListener('did-fail-load', onerror)
+         webview.removeEventListener('page-title-updated', updateConnectivity)
+@@ -448,15 +545,37 @@ export default function WebView() {
+         />
+       )}
+       {loading.refresh && <UpdateComponent message={loading.message} />}
+-      <webview
+-        key={store}
+-        ref={webviewRef}
+-        className="WebView__webview"
+-        partition={`persist:${store ?? (runner === 'legendary' ? 'epic' : runner === 'nile' ? 'amazon' : runner)}`}
+-        src={startUrl}
+-        allowpopups={trueAsStr}
+-        preload={webviewPreloadPath}
+-      />
++      {runner === 'nile' && amazonLoginError ? (
++        <div className="WebView__loginError" role="alert">
++          <p>{amazonLoginError}</p>
++          <button
++            type="button"
++            className="button"
++            onClick={() => setAmazonLoginAttempt((attempt) => attempt + 1)}
++          >
++            {t('amazon-login.retry', 'Retry')}
++          </button>
++          <button
++            type="button"
++            className="button outline"
++            onClick={() => navigate('/login')}
++          >
++            {t('amazon-login.cancel', 'Back to accounts')}
++          </button>
++        </div>
++      ) : (
++        startUrl && (
++          <webview
++            key={runner === 'nile' ? `nile-${amazonLoginAttempt}` : store}
++            ref={webviewRef}
++            className="WebView__webview"
++            partition={`persist:${store ?? (runner === 'legendary' ? 'epic' : runner === 'nile' ? 'amazon' : runner)}`}
++            src={startUrl}
++            allowpopups={trueAsStr}
++            preload={webviewPreloadPath}
++          />
++        )
++      )}
+       {showLoginWarningFor && (
+         <LoginWarning
+           warnLoginForStore={showLoginWarningFor}
+-- 
+2.55.0
+
