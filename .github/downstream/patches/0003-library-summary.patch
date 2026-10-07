@@ -1,0 +1,294 @@
+From 56b50e18709afcd07464a18c431750672267b2df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
+Date: Tue, 6 Oct 2026 21:52:25 +0200
+Subject: [PATCH] feat: Show library totals in a counter popover
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Show filtered per-store counts, unique games, multi-store games, extra copies and installed games using native popover behavior.
+---
+ src/common/__tests__/gameStack.test.ts        |  32 +++++-
+ src/common/gameStack.ts                       |  19 ++++
+ .../components/LibraryHeader/index.css        |  57 ++++++++++
+ .../components/LibraryHeader/index.tsx        | 102 +++++++++++++++---
+ 4 files changed, 194 insertions(+), 16 deletions(-)
+
+diff --git a/src/common/__tests__/gameStack.test.ts b/src/common/__tests__/gameStack.test.ts
+index 344f526f..f1c409d9 100644
+--- a/src/common/__tests__/gameStack.test.ts
++++ b/src/common/__tests__/gameStack.test.ts
+@@ -2,7 +2,8 @@ import type { GameInfo } from '../types'
+ import {
+   getGameIdentity,
+   getGameStackRepresentative,
+-  groupGameCopies
++  groupGameCopies,
++  summarizeGameCopies
+ } from '../gameStack'
+ 
+ function game(
+@@ -169,6 +170,35 @@ describe('groupGameCopies', () => {
+   })
+ })
+ 
++describe('summarizeGameCopies', () => {
++  it('distinguishes multi-store games from extra copies and excludes DLC', () => {
++    const epic = game('legendary', 'epic', 'Shared', { is_installed: true })
++    const summary = summarizeGameCopies([
++      epic,
++      epic,
++      game('gog', 'gog', 'Shared'),
++      game('nile', 'amazon', 'Shared', { is_installed: true }),
++      game('gog', 'other', 'Other'),
++      game('sideload', 'custom', 'Shared'),
++      game('gog', 'dlc', 'DLC', { install: { is_dlc: true } })
++    ])
++    expect(summary).toEqual({
++      stores: new Map([
++        ['legendary', 1],
++        ['gog', 2],
++        ['nile', 1],
++        ['sideload', 1]
++      ]),
++      copies: 5,
++      unique: 3,
++      duplicated: 1,
++      extraCopies: 2,
++      installed: 1
++    })
++    expect(summarizeGameCopies([]).unique).toBe(0)
++  })
++})
++
+ describe('getGameStackRepresentative', () => {
+   it('prefers an installed copy', () => {
+     const epic = game('legendary', 'epic')
+diff --git a/src/common/gameStack.ts b/src/common/gameStack.ts
+index 2184e3f1..17f7fc20 100644
+--- a/src/common/gameStack.ts
++++ b/src/common/gameStack.ts
+@@ -74,6 +74,25 @@ export function groupGameCopies(
+   return result
+ }
+ 
++/** Count the same filtered, deduplicated games used by library cards. */
++export function summarizeGameCopies(library: readonly GameInfo[]) {
++  const stacks = groupGameCopies(library)
++  const copies = stacks.flat()
++  const stores = new Map<GameInfo['runner'], number>()
++  for (const game of copies) {
++    stores.set(game.runner, (stores.get(game.runner) ?? 0) + 1)
++  }
++  return {
++    stores,
++    copies: copies.length,
++    unique: stacks.length,
++    duplicated: stacks.filter((stack) => stack.length > 1).length,
++    extraCopies: copies.length - stacks.length,
++    installed: stacks.filter((stack) => stack.some((game) => game.is_installed))
++      .length
++  }
++}
++
+ /** Keep running/download operations visible, then prefer an installed copy. */
+ export function getGameStackRepresentative(
+   copies: readonly GameInfo[],
+diff --git a/src/frontend/screens/Library/components/LibraryHeader/index.css b/src/frontend/screens/Library/components/LibraryHeader/index.css
+index f0ce9a1e..60ba2ff6 100644
+--- a/src/frontend/screens/Library/components/LibraryHeader/index.css
++++ b/src/frontend/screens/Library/components/LibraryHeader/index.css
+@@ -21,6 +21,63 @@
+   box-shadow: 0px 0px 0px 3px var(--button-stroke, var(--text-default));
+ }
+ 
++.librarySummaryButton {
++  anchor-name: --library-summary;
++  border: none;
++  color: inherit;
++  font-family: inherit;
++  cursor: pointer;
++}
++
++.librarySummaryButton:focus-visible {
++  outline: 2px solid var(--accent);
++  outline-offset: 2px;
++}
++
++.librarySummary {
++  position-anchor: --library-summary;
++  top: anchor(bottom);
++  left: anchor(left);
++  position-try-fallbacks: flip-inline, flip-block;
++  margin: var(--space-xs) 0;
++  width: min(22rem, calc(100vw - 2rem));
++  box-sizing: border-box;
++  max-height: 80vh;
++  overflow: auto;
++  padding: var(--space-md);
++  border: 1px solid var(--text-secondary);
++  border-radius: var(--space-xs);
++  background: var(--background-darker);
++  color: var(--text-default);
++  box-shadow: 0 8px 24px #0006;
++  font-size: var(--text-md);
++  font-weight: var(--regular);
++  text-transform: none;
++}
++
++.librarySummary p {
++  font-size: var(--text-sm);
++  color: var(--text-secondary);
++}
++
++.librarySummary dl > div {
++  display: flex;
++  justify-content: space-between;
++  gap: var(--space-md);
++  padding-block: var(--space-3xs);
++}
++
++.librarySummary dd {
++  margin: 0;
++  font-variant-numeric: tabular-nums;
++  font-weight: var(--bold);
++}
++
++.librarySummaryTotals {
++  border-top: 1px solid var(--text-secondary);
++  padding-top: var(--space-xs);
++}
++
+ .numberOfgames {
+   font-size: var(--text-md);
+   font-weight: var(--regular);
+diff --git a/src/frontend/screens/Library/components/LibraryHeader/index.tsx b/src/frontend/screens/Library/components/LibraryHeader/index.tsx
+index e02f07ab..e8e72bd8 100644
+--- a/src/frontend/screens/Library/components/LibraryHeader/index.tsx
++++ b/src/frontend/screens/Library/components/LibraryHeader/index.tsx
+@@ -1,7 +1,16 @@
+-import React, { useContext, useMemo } from 'react'
++import React, {
++  useContext,
++  useEffect,
++  useId,
++  useMemo,
++  useRef,
++  useState
++} from 'react'
+ import { useTranslation } from 'react-i18next'
+ import ActionIcons from 'frontend/components/UI/ActionIcons'
+ import { GameInfo } from 'common/types'
++import { summarizeGameCopies } from 'common/gameStack'
++import { getStoreName } from 'frontend/helpers'
+ import LibraryContext from '../../LibraryContext'
+ import './index.css'
+ import AddGameButton from '../AddGameButton'
+@@ -13,19 +22,17 @@ type Props = {
+ export default React.memo(function LibraryHeader({ list }: Props) {
+   const { t } = useTranslation()
+   const { showFavourites } = useContext(LibraryContext)
+-
+-  const numberOfGames = useMemo(() => {
+-    if (!list) {
+-      return 0
+-    }
+-    // is_dlc is only applicable when the game is from legendary, but checking anyway doesn't cause errors and enable accurate counting in the 'ALL' game tab
+-    const dlcCount = list.filter(
+-      (lib) => lib.runner !== 'sideload' && lib.install.is_dlc
+-    ).length
+-
+-    const total = list.length - dlcCount
+-    return total > 0 ? `${total}` : 0
+-  }, [list])
++  const summary = useMemo(() => summarizeGameCopies(list ?? []), [list])
++  const id = useId()
++  const [open, setOpen] = useState(false)
++  const label = t('librarySummary.title', 'Library summary')
++  const popover = useRef<HTMLDivElement>(null)
++  useEffect(() => {
++    const element = popover.current
++    const updateOpen = () => setOpen(element?.matches(':popover-open') ?? false)
++    element?.addEventListener('toggle', updateOpen)
++    return () => element?.removeEventListener('toggle', updateOpen)
++  }, [])
+ 
+   return (
+     <h5 className="libraryHeader" data-tour="library-header">
+@@ -34,7 +41,72 @@ export default React.memo(function LibraryHeader({ list }: Props) {
+           {showFavourites
+             ? t('favourites', 'Favourites')
+             : t('title.allGames', 'All Games')}
+-          <span className="numberOfgames">{numberOfGames}</span>
++          <button
++            type="button"
++            className="numberOfgames librarySummaryButton"
++            aria-label={label}
++            aria-expanded={open}
++            aria-controls={id}
++            {...{ popovertarget: id }}
++          >
++            {summary.copies}
++          </button>
++          <div
++            id={id}
++            className="librarySummary"
++            role="region"
++            aria-label={label}
++            {...{ popover: 'auto' }}
++            ref={popover}
++          >
++            <strong>{label}</strong>
++            <p>
++              {t(
++                'librarySummary.scope',
++                'Counts reflect current library filters. DLC is excluded.'
++              )}
++            </p>
++            <dl>
++              {Array.from(summary.stores, ([runner, count]) => (
++                <div key={runner}>
++                  <dt>{getStoreName(runner, t('Other'))}</dt>
++                  <dd>{count}</dd>
++                </div>
++              ))}
++            </dl>
++            <dl className="librarySummaryTotals">
++              {[
++                [
++                  t('librarySummary.copies', 'Total store copies'),
++                  summary.copies
++                ],
++                [t('librarySummary.unique', 'Unique games'), summary.unique],
++                [
++                  t('librarySummary.duplicates', 'Multi-store games'),
++                  summary.duplicated
++                ],
++                [
++                  t('librarySummary.extra', 'Extra copies'),
++                  summary.extraCopies
++                ],
++                [
++                  t('librarySummary.installed', 'Installed games'),
++                  summary.installed
++                ]
++              ].map(([name, count]) => (
++                <div key={name}>
++                  <dt>{name}</dt>
++                  <dd>{count}</dd>
++                </div>
++              ))}
++            </dl>
++            <p>
++              {t(
++                'librarySummary.matching',
++                'Duplicates use matching store titles. Different editions stay separate; installations and settings are never merged.'
++              )}
++            </p>
++          </div>
+           <AddGameButton data-tour="library-add-game" />
+         </span>
+         <ActionIcons />
+-- 
+2.55.0
+
