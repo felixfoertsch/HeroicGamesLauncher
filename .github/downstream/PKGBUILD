@@ -1,0 +1,46 @@
+# Package an already validated Electron build. No source downloads or build scripts.
+pkgname=heroic-felix
+pkgver=${DOWNSTREAM_PKGVER:?}
+pkgrel=${DOWNSTREAM_PKGREL:?}
+pkgdesc='Heroic Games Launcher with Felix downstream patches (unofficial)'
+arch=('x86_64')
+url='https://github.com/felixfoertsch/HeroicGamesLauncher'
+license=('GPL-3.0-only')
+depends=('alsa-lib' 'at-spi2-core' 'cairo' 'dbus' 'expat' 'gcc-libs' 'glib2'
+         'glibc' 'gtk3' 'libdrm' 'libnotify' 'libx11' 'libxcb' 'libxcomposite'
+         'libxdamage' 'libxext' 'libxfixes' 'libxkbcommon' 'libxrandr' 'mesa'
+         'nspr' 'nss' 'pango' 'libsecret' 'xdg-utils')
+optdepends=('wine: Run Windows games without Proton'
+            'winetricks: Manage Wine prefixes'
+            'gamemode: Game performance tuning'
+            'mangohud: Performance overlay')
+provides=('heroic-games-launcher' 'heroic')
+conflicts=('heroic' 'heroic-games-launcher' 'heroic-games-launcher-bin'
+           'heroic-games-launcher-git')
+options=('!strip' '!debug')
+
+package() {
+  install -d "$pkgdir/opt/heroic" "$pkgdir/usr/bin"
+  cp -a /payload/. "$pkgdir/opt/heroic/"
+  chmod 755 "$pkgdir/opt/heroic/heroic"
+  # Electron's sandbox helper must be root-owned; fakeroot records this ownership.
+  chown -R root:root "$pkgdir/opt/heroic"
+  chmod 4755 "$pkgdir/opt/heroic/chrome-sandbox"
+  ln -s /opt/heroic/heroic "$pkgdir/usr/bin/heroic"
+  install -Dm644 /recipe/COPYING "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 /payload/resources/app.asar.unpacked/build/icon.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/heroic.png"
+  install -d "$pkgdir/usr/share/applications"
+  cat > "$pkgdir/usr/share/applications/heroic.desktop" <<'DESKTOP'
+[Desktop Entry]
+Name=Heroic Games Launcher (Felix)
+Comment=Unofficial Heroic downstream build
+Exec=heroic %U
+Icon=heroic
+Type=Application
+Terminal=false
+Categories=Game;
+MimeType=x-scheme-handler/heroic;
+StartupWMClass=Heroic
+DESKTOP
+}

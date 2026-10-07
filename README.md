@@ -1,3 +1,24 @@
+This fork prepares custom Heroic builds from upstream [`main`](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/tree/main) or a stable release plus accepted patches. `automation` owns reconstruction and validated Linux stable/nightly publication; generated `main` follows upstream main without workflows. Accepted patches include cross-store stacking, library totals and Nile session recovery.
+
+# Downstream patches
+
+Both channels apply the ordered [patch queue](.github/downstream/patches):
+
+1. **0001 — Version label:** sidebar shows upstream version plus accepted patch count, for example `2.22.3 + #4`.
+
+2. **0002 — Cross-store game stacking:** matching store copies share one library card with a copy chooser. Installations, settings and game pages stay independent. See `doc/game-stacking.md` in generated source for matching rules and smoke tests.
+
+3. **0003 — Library summary:** click the game counter for per-store totals, unique games, multi-store games, extra copies and installed games. Counts follow current library filters.
+
+4. **0004 — Amazon session recovery:** recover Nile profiles and login redirects, repair missing expiry metadata when refresh credentials exist, and persist local logout even when Nile fails. See `doc/nile-login.md` in generated source.
+
+Preserved development references:
+
+- [Original Nile development branch](https://github.com/felixfoertsch/HeroicGamesLauncher/tree/fix/nile-amazon-login)
+- [Original stacking development branch](https://github.com/felixfoertsch/HeroicGamesLauncher/tree/feat/stack-game-copies)
+
+---
+
 # Heroic Games Launcher
 
 [![GitHub release](https://img.shields.io/github/v/release/Heroic-Games-Launcher/HeroicGamesLauncher?style=for-the-badge)](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest)
