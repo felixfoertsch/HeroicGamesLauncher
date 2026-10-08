@@ -171,6 +171,10 @@ class ChannelBuildTests(unittest.TestCase):
                          'makepkg --nodeps', 'pacman --config', 'digest-mismatch: error',
                          'passedChecks', "matrix.channel == 'stable'", 'persist-credentials: false'):
             self.assertIn(contract, workflow)
+        self.assertEqual(workflow.count("node-version: '24.21.0'"), 2)
+        self.assertIn('node = "24.21.0"', (workflows.parents[1] / '.mise.toml').read_text())
+        self.assertIn('.mise.toml', c.COPIED)
+        self.assertEqual(sorted(path.name for path in workflows.parents[1].glob('README*')), ['README.md'])
         self.assertNotIn('DOWNSTREAM_PUSH_TOKEN', workflow)
         self.assertIn('branches: [patch-queue]', workflow)
         self.assertEqual(workflow.count("github.ref == 'refs/heads/patch-queue'"), 2)

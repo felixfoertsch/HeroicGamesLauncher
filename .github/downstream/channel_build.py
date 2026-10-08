@@ -21,7 +21,7 @@ import os
 CHECKS = ['typescript', 'jest', 'eslint', 'prettier', 'linux-packaging', 'arch-package', 'pacman-smoke']
 
 QUEUE = Path(".github/downstream/patches")
-COPIED = (".github/downstream", "doc/downstream.md", "AGENTS.md")
+COPIED = (".github/downstream", "doc/downstream.md", "AGENTS.md", ".mise.toml")
 
 
 def patch_queue(repo):
