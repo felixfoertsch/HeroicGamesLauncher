@@ -6,6 +6,11 @@ on:
   push:
     branches: [patch-queue]
   workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild unchanged published source
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,7 +65,20 @@ jobs:
         working-directory: control
         env:
           CHANNEL: ${{ matrix.channel }}
-        run: python3 .github/downstream/channel_build.py prepare --repo . --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/release" --upstream-sha '${{ steps.upstream.outputs.sha }}' --upstream-tag '${{ steps.upstream.outputs.tag }}' --channel "$CHANNEL" --build-id '${{ github.run_id }}.${{ github.run_attempt }}'
+          GH_TOKEN: ${{ github.token }}
+          REBUILD: ${{ inputs.rebuild || false }}
+        run: |
+          flags=()
+          [[ "$REBUILD" == true ]] || flags+=(--skip-published)
+          python3 .github/downstream/channel_build.py prepare --repo . --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/release" --upstream-sha '${{ steps.upstream.outputs.sha }}' --upstream-tag '${{ steps.upstream.outputs.tag }}' --channel "$CHANNEL" --build-id '${{ github.run_id }}.${{ github.run_attempt }}' "${flags[@]}"
+      - name: Upload channel build decision
+        run: |
+          mkdir -p "$RUNNER_TEMP/decision"
+          printf '%s\n' '${{ steps.prepare.outputs.build }}' > "$RUNNER_TEMP/decision/build"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: decision-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/decision/build
       - name: Set up Node
         if: steps.prepare.outputs.build == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -235,10 +253,22 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
+          name: decision-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          digest-mismatch: error
+          path: decision
+      - id: decision
+        run: |
+          value=$(cat decision/build)
+          [[ "$value" == true || "$value" == false ]]
+          echo "build=$value" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: steps.decision.outputs.build == 'true'
+        with:
           name: channel-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
           digest-mismatch: error
           path: release-assets
       - name: Verify trusted channel provenance before signing
+        if: steps.decision.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ matrix.channel }}
@@ -253,7 +283,7 @@ jobs:
           freshness('.', plan)
           PYTHON
       - name: Sign stable pacman package only
-        if: matrix.channel == 'stable'
+        if: matrix.channel == 'stable' && steps.decision.outputs.build == 'true'
         id: sign
         env:
           PACMAN_SIGNING_KEY: ${{ secrets.PACMAN_SIGNING_KEY }}
@@ -261,6 +291,7 @@ jobs:
           PACMAN_SIGNING_FINGERPRINT: ${{ vars.PACMAN_SIGNING_FINGERPRINT }}
         run: bash .github/downstream/sign.sh release-assets
       - name: Guarded immutable publication
+        if: steps.decision.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ matrix.channel }}

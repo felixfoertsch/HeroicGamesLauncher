@@ -22,9 +22,9 @@ Before accepting a patch, test it against both upstream main and the latest stab
 
 ## Channels and publication
 
-`.github/workflows/channel.yml` builds both channels on pushes to `patch-queue`, manual dispatch and the six-hour schedule. Source selection and reconstruction live in `.github/downstream/channel_build.py`.
+`.github/workflows/channel.yml` builds both channels on pushes to `patch-queue`, manual dispatch and the six-hour schedule. Source selection and reconstruction live in `.github/downstream/channel_build.py`. Complete published candidates with matching source, upstream and control identities are skipped after provenance and asset-digest checks. Manual dispatch accepts `rebuild` to create a new release from unchanged source. Local automation requires Python ≥3.11.
 
-Stable publishes immutable CalVer releases. Only stable may update Latest, `downstream-feed` and the signed `pacman` repository. Public stable tags use `heroic-release-tag-YYYY.MM.DD.n`, with Europe/Berlin dates and a counter per upstream tag/date. Never move a published tag or overwrite its binaries.
+Stable publishes immutable CalVer releases. Only stable may update Latest, `downstream-feed` and the signed `pacman` repository. Public stable tags use `<upstream-tag>-YYYY.MM.DD.N`, such as `v2.22.3-2026.10.08.2`, with Europe/Berlin dates and a counter per upstream tag/date. Never move a published tag or overwrite its binaries.
 
 Nightly publishes isolated prereleases, never stable update channels. Its AppImage feed is pinned to that immutable nightly; install a newer nightly manually.
 

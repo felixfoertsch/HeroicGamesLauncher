@@ -34,7 +34,69 @@ def patch_queue(repo):
     return patches
 
 
-def prepare(repo, source, output, upstream_sha, upstream_tag, channel, build_id):
+def published_candidate(plan, repo='.'):
+    pages = json.loads(command(['gh', 'api', f'repos/{REPOSITORY}/releases?per_page=100', '--paginate', '--slurp']))
+    for release in (release for page in pages for release in page):
+        if release['draft'] or release['prerelease'] != (plan['channel'] == 'nightly'):
+            continue
+        assets = {asset['name']: asset for asset in release['assets']}
+        if not {'build-info.json', 'SHA256SUMS'} <= assets.keys():
+            continue
+        with tempfile.TemporaryDirectory() as temp:
+            command(['gh', 'release', 'download', release['tag_name'], '--repo', REPOSITORY,
+                     '--pattern', 'build-info.json', '--pattern', 'SHA256SUMS', '--dir', temp])
+            for name in ('build-info.json', 'SHA256SUMS'):
+                digest = 'sha256:' + hashlib.sha256((Path(temp) / name).read_bytes()).hexdigest()
+                if assets[name].get('digest') != digest:
+                    raise ValueError('Published provenance hash mismatch')
+            previous = json.loads((Path(temp) / 'build-info.json').read_text())
+            if any(previous.get(key) != plan.get(key) for key in
+                   ('candidate', 'base', 'expectedAutomation', 'channel', 'upstream')):
+                continue
+            if previous.get('passedChecks') != CHECKS or previous.get('repository') != REPOSITORY or previous.get('schema') != 2:
+                continue
+            validate_plan_version(previous)
+            tag = previous['tag']
+            if tag != release['tag_name'] or remote_sha(repo, 'refs/tags/' + tag) != previous['candidate']:
+                raise ValueError('Published tag source mismatch')
+            required = {'build-info.json', 'SHA256SUMS', 'packaging.json', 'RELEASE-NOTES.md',
+                        'latest-linux.yml', 'archlinux-image.txt', f'Heroic-{tag}-source.tar.gz',
+                        f'Heroic-{tag}-linux-x86_64.AppImage', f'Heroic-{tag}-linux-x64.tar.xz'}
+            package = f"heroic-games-launcher-bin-{previous['pacmanVersion']}-1-x86_64.pkg.tar.zst"
+            if plan['channel'] == 'nightly' or package in assets:
+                required.add(package)
+            if plan['channel'] == 'stable':
+                if package + '.sig' in assets:
+                    required.update({package, package + '.sig', 'heroic-games-launcher-bin-key.asc',
+                                     'heroic-games-launcher-bin-key.fingerprint', 'heroic-games-launcher-bin.db',
+                                     'heroic-games-launcher-bin.db.sig', 'heroic-games-launcher-bin.files',
+                                     'heroic-games-launcher-bin.files.sig'})
+                else:
+                    required.add('SIGNING-STATUS.txt')
+            if set(assets) != required:
+                return False
+            rows = (Path(temp) / 'SHA256SUMS').read_text().splitlines()
+            recorded = dict((name, 'sha256:' + digest) for digest, name in
+                            (row.split('  ', 1) for row in rows))
+            complete = (set(recorded) == set(assets) - {'SHA256SUMS'} and
+                        all(assets[name].get('digest') == digest for name, digest in recorded.items()))
+            if not complete:
+                continue
+            if plan['channel'] == 'stable':
+                for delivery, names in [('downstream-feed', {'latest-linux.yml'}),
+                                        ('pacman', {name for name in assets if name.startswith('heroic-games-launcher-bin')})]:
+                    if delivery == 'pacman' and package + '.sig' not in assets:
+                        continue
+                    feed = next((entry for page in pages for entry in page
+                                 if entry['tag_name'] == delivery and not entry['draft']), None)
+                    delivery_assets = {asset['name']: asset for asset in feed['assets']} if feed else {}
+                    if any(delivery_assets.get(name, {}).get('digest') != assets[name].get('digest') for name in names):
+                        return False
+            return True
+    return False
+
+
+def prepare(repo, source, output, upstream_sha, upstream_tag, channel, build_id, skip_published=False):
     repo, source, output = (Path(value).resolve() for value in (repo, source, output))
     if source.exists() or output.exists() or not SHA.fullmatch(upstream_sha):
         raise ValueError("Invalid candidate destination or upstream SHA")
@@ -107,6 +169,9 @@ def prepare(repo, source, output, upstream_sha, upstream_tag, channel, build_id)
             "expectedAutomation": git(repo, 'rev-parse', 'HEAD'),
             "packageManager": json.loads((source / 'package.json').read_text()).get('packageManager'),
             "build": True, "patches": patches, "buildId": build_id, **version}
+    if skip_published and published_candidate({**plan, 'passedChecks': CHECKS}, repo):
+        outputs({'build': False})
+        return {**plan, 'build': False}
     output.mkdir(parents=True)
     write_json(output / "build-info.json", plan)
     git(repo, "update-ref", "refs/downstream-candidate", candidate)
@@ -284,11 +349,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("prepare", "sync-main", "publish")); parser.add_argument("--repo", default=".")
     parser.add_argument('--patch-queue-sha')
+    parser.add_argument('--skip-published', action='store_true')
     parser.add_argument("--source"); parser.add_argument("--output", required=True); parser.add_argument("--upstream-sha")
     parser.add_argument("--upstream-tag"); parser.add_argument("--channel"); parser.add_argument("--build-id"); parser.add_argument("--expected-main")
     args = parser.parse_args()
     if args.operation == "prepare":
-        prepare(args.repo, args.source, args.output, args.upstream_sha, args.upstream_tag, args.channel, args.build_id)
+        prepare(args.repo, args.source, args.output, args.upstream_sha, args.upstream_tag, args.channel, args.build_id, args.skip_published)
     elif args.operation == 'publish':
         publish(args.repo, args.output, args.channel, args.build_id, args.patch_queue_sha)
     else:
