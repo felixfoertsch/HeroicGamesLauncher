@@ -121,7 +121,7 @@ def prepare(repo, source, output, upstream_sha, upstream_tag, channel, build_id,
             subprocess.run(['git', '-c', 'user.name=Astra', '-c', 'user.email=astra@users.noreply.github.com',
                             '-c', 'commit.gpgSign=false', 'am', '--keep-non-patch', str(patch)],
                            cwd=source, env={**os.environ, 'GIT_COMMITTER_DATE': stamp},
-                           check=True, capture_output=True)
+                           check=True)
         patches.append({"original": original, "commit": git(source, "rev-parse", "HEAD"),
                         "subject": subject, "status": status})
     # Display upstream identity separately from CalVer used by package updates.

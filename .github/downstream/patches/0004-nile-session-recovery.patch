@@ -1245,9 +1245,9 @@ index 3e45bc40..97830c6b 100644
 +        if (!amazonLoginInProgress.current) {
 +          setLoading((current) => ({ ...current, refresh: false }))
 +        }
-         const userAgent =
-           startUrl === epicLoginUrl
-             ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) EpicGamesLauncher'
+
+         // only set a custom user agent for Epic, setting a user agent seems to break Cloudflare bot
+         // checks in the GOG login
 @@ -212,15 +287,12 @@ export default function WebView() {
                gog.login(code).then(() => handleSuccessfulLogin())
              }

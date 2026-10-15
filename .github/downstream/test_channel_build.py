@@ -88,6 +88,37 @@ class ChannelBuildTests(unittest.TestCase):
         self.assertEqual([entry.name for entry in queue], ['0001-version-label.patch', '0002-stack-game-copies.patch', '0003-library-summary.patch', '0004-nile-session-recovery.patch'])
         self.assertIn('gameStack.test.ts', queue[1].read_text())
 
+    def test_nile_loading_guard_applies_with_upstream_gog_user_agent_fix(self):
+        mail = (Path(__file__).parents[2] / c.QUEUE / '0004-nile-session-recovery.patch').read_text()
+        hunks = mail.split('diff --git a/src/frontend/screens/WebView/index.tsx b/src/frontend/screens/WebView/index.tsx\n', 1)[1]
+        hunk = next(part for part in hunks.split('\n@@ ') if 'const loadstop = () => {' in part)
+        patch_text = ('diff --git a/index.tsx b/index.tsx\n--- a/index.tsx\n+++ b/index.tsx\n@@ '
+                      + hunk + '\n')
+        original = '''  useLayoutEffect(() => {
+    if (webview) {
+      const loadstop = () => {
+        setLoading({ ...loading, refresh: false })
+
+        // only set a custom user agent for Epic, setting a user agent seems to break Cloudflare bot
+        // checks in the GOG login
+        if (startUrl === epicLoginUrl) {
+          const userAgent =
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) EpicGamesLauncher'
+          webview.setUserAgent(userAgent)
+        }
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / 'index.tsx'
+            target.write_text(original)
+            patch_file = root / 'loading.patch'; patch_file.write_text(patch_text)
+            d.git(root, 'apply', str(patch_file))
+            self.assertEqual(target.read_text(), original.replace(
+                '        setLoading({ ...loading, refresh: false })',
+                '        if (!amazonLoginInProgress.current) {\n'
+                '          setLoading((current) => ({ ...current, refresh: false }))\n'
+                '        }'))
+
     def test_published_candidate_skips_only_complete_matching_release(self):
         import hashlib
         plan = {'candidate': 'a' * 40, 'base': 'b' * 40, 'expectedAutomation': 'c' * 40,
