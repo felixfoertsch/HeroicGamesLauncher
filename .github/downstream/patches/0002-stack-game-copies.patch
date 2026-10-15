@@ -1,0 +1,861 @@
+From 27e4aadb100b150906bb04ca26c52d410c1b4061 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
+Date: Tue, 6 Oct 2026 21:31:45 +0200
+Subject: [PATCH] feat: Stack duplicate cross-store games in the library
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Consolidates preserved stacking work into one patch against upstream main. Store copies retain independent game pages, installations and settings.
+---
+ doc/game-stacking.md                          |  70 ++++++
+ jest.config.js                                |   2 +-
+ src/common/__tests__/gameStack.test.ts        | 215 ++++++++++++++++++
+ src/common/gameStack.ts                       |  87 +++++++
+ src/common/jest.config.js                     |  11 +
+ .../Library/components/GameCard/index.tsx     |   4 +
+ .../Library/components/GameCopies/index.css   | 102 +++++++++
+ .../Library/components/GameCopies/index.tsx   | 101 ++++++++
+ .../Library/components/GamesList/index.tsx    | 112 +++++----
+ 9 files changed, 662 insertions(+), 42 deletions(-)
+ create mode 100644 doc/game-stacking.md
+ create mode 100644 src/common/__tests__/gameStack.test.ts
+ create mode 100644 src/common/gameStack.ts
+ create mode 100644 src/common/jest.config.js
+ create mode 100644 src/frontend/screens/Library/components/GameCopies/index.css
+ create mode 100644 src/frontend/screens/Library/components/GameCopies/index.tsx
+
+diff --git a/doc/game-stacking.md b/doc/game-stacking.md
+new file mode 100644
+index 00000000..dd1213ff
+--- /dev/null
++++ b/doc/game-stacking.md
+@@ -0,0 +1,70 @@
++# Cross-store game stacks
++
++The library groups matching store copies into one card (or one row in list
++layout). A circular badge shows the number of copies in that stack. Clicking
++or keyboard-activating the badge opens a chooser with each store, its title,
++and whether that copy is installed. Selecting a copy opens that copy's existing
++game page, with the usual install, play, settings and uninstall actions.
++
++The normal card actions target the representative copy: an active operation
++first, otherwise an installed copy, otherwise the first copy in library order.
++The store logo identifies that representative. Running games and downloads
++therefore remain accessible without treating different installations as one.
++
++## Matching and filtering
++
++Matching uses store-provided titles, ignoring case, whitespace, trademark marks,
++apostrophe style, and colon/hyphen separators. Unicode compatibility normalization
++handles equivalent character representations. Edition names, sequel numbers,
++accents and other substantive title differences are retained. Display-name
++overrides do not change automatic matching.
++
++Only unambiguous cross-store matches are grouped. Sideloaded games, blank titles
++and multiple distinct same-title entries from a single store stay separate.
++DLC entries are excluded as before. Repeated records with the same runner and
++store ID do not inflate the count.
++
++Grouping happens after the existing store, search, hidden-game, category and
++other library filters; the installed-only restriction is applied before
++counting. The badge counts copies in the current results, not copies excluded
++by filters. Recent/favourite sections group the entries supplied to that section.
++Library header totals continue to count the underlying store entries.
++
++This is deliberately conservative title matching, not a global game-identity
++database. Differently named store listings can remain separate, and unrelated
++games with identical titles cannot always be distinguished. There are no new
++network requests, metadata services, dependencies or configuration migrations.
++No account records, game installations, saves or per-store settings are merged,
++deleted or hidden by this feature.
++
++## Tests
++
++The Common Jest project contains regression tests for matching, ambiguous
++editions, sideloads, DLC exclusion, filter semantics, stable ordering,
++store-scoped IDs, non-mutation and representative selection.
++
++```sh
++pnpm test --selectProjects Common --runInBand
++pnpm codecheck
++pnpm lint
++```
++
++## Manual smoke test
++
++Start the development build with `pnpm start` after installing dependencies and
++running `pnpm download-helper-binaries`.
++
++1. With the same game in Epic and GOG, verify one tile with a circular `2` badge.
++   A game owned in only one store should have no badge.
++2. Open the badge with mouse, Enter and Space. Verify both store entries and
++   installation states, correct destination game pages, Escape/Close handling,
++   and focus restoration to the badge.
++3. Check grid and list layouts, recent/favourite sections, and controller mode.
++   Ensure the badge does not cover the store icon, status or action buttons.
++4. Filter to one store, hide one copy, and enable installed-only. The chooser
++   must not reintroduce excluded entries. Clear the filters to restore the stack.
++5. Install or launch the non-representative copy from its own page, then return
++   to the library. Verify its progress/stop actions and lazy-loaded artwork,
++   including after the operation completes and the representative changes.
++6. Check a base game, sequel and remaster: they must remain separate. Check that
++   each copy's settings, save location and uninstall actions remain independent.
+diff --git a/jest.config.js b/jest.config.js
+index be37d675..2fa780e1 100644
+--- a/jest.config.js
++++ b/jest.config.js
+@@ -16,7 +16,7 @@ module.exports = {
+     '<rootDir>/coverage'
+   ],
+   coverageReporters: ['text', 'html'],
+-  projects: ['<rootDir>/src/backend'],
++  projects: ['<rootDir>/src/backend', '<rootDir>/src/common'],
+ 
+   rootDir: '.'
+ }
+diff --git a/src/common/__tests__/gameStack.test.ts b/src/common/__tests__/gameStack.test.ts
+new file mode 100644
+index 00000000..344f526f
+--- /dev/null
++++ b/src/common/__tests__/gameStack.test.ts
+@@ -0,0 +1,215 @@
++import type { GameInfo } from '../types'
++import {
++  getGameIdentity,
++  getGameStackRepresentative,
++  groupGameCopies
++} from '../gameStack'
++
++function game(
++  runner: GameInfo['runner'],
++  app_name: string,
++  title = 'Example Game',
++  overrides: Partial<GameInfo> = {}
++): GameInfo {
++  return {
++    runner,
++    app_name,
++    title,
++    art_cover: '',
++    art_square: '',
++    install: {},
++    is_installed: false,
++    canRunOffline: true,
++    ...overrides
++  }
++}
++
++describe('groupGameCopies', () => {
++  it('stacks Epic and GOG copies while preserving their store IDs', () => {
++    const epic = game('legendary', 'epic-id')
++    const gog = game('gog', 'gog-id')
++    expect(groupGameCopies([epic, gog])).toEqual([[epic, gog]])
++  })
++
++  it('supports three or more stores, not just Epic and GOG', () => {
++    const copies = [
++      game('legendary', 'epic'),
++      game('gog', 'gog'),
++      game('nile', 'amazon'),
++      game('zoom', 'zoom')
++    ]
++    expect(groupGameCopies(copies)).toEqual([copies])
++  })
++
++  it('normalizes case, whitespace, Unicode and trademark marks', () => {
++    const epic = game('legendary', 'epic', '  EXAMPLE\u00a0 Game™  ')
++    const gog = game('gog', 'gog', 'Example Game®')
++    const amazon = game('nile', 'amazon', 'Ｅｘａｍｐｌｅ Game©')
++    expect(groupGameCopies([epic, gog, amazon])).toEqual([[epic, gog, amazon]])
++  })
++
++  it('normalizes typographic apostrophes, colons and hyphens', () => {
++    const epic = game('legendary', 'epic', 'Hero’s Quest: Part-One')
++    const gog = game('gog', 'gog', "Hero's Quest – Part One")
++    expect(groupGameCopies([epic, gog])).toEqual([[epic, gog]])
++  })
++
++  it('preserves accents and normalizes canonically equivalent Unicode', () => {
++    const epic = game('legendary', 'epic', 'Café')
++    const gog = game('gog', 'gog', 'Cafe\u0301')
++    const other = game('nile', 'other', 'Cafe')
++    expect(groupGameCopies([epic, gog, other])).toEqual([[epic, gog], [other]])
++  })
++
++  it('does not merge sequels, remasters, demos or different editions', () => {
++    const copies = [
++      game('legendary', 'base', 'Game'),
++      game('gog', 'sequel', 'Game 2'),
++      game('nile', 'remaster', 'Game Remastered'),
++      game('gog', 'goty', 'Game Game of the Year Edition'),
++      game('zoom', 'deluxe', 'Game Deluxe Edition'),
++      game('nile', 'demo', 'Game Demo')
++    ]
++    expect(groupGameCopies(copies)).toEqual(copies.map((copy) => [copy]))
++  })
++
++  it('keeps sideloaded games independent of matching store titles', () => {
++    const epic = game('legendary', 'epic')
++    const sideload = game('sideload', 'custom')
++    const gog = game('gog', 'gog')
++    expect(groupGameCopies([epic, sideload, gog])).toEqual([
++      [epic, gog],
++      [sideload]
++    ])
++  })
++
++  it('does not combine two distinct copies from the same store', () => {
++    const first = game('gog', 'first')
++    const second = game('gog', 'second')
++    expect(groupGameCopies([first, second])).toEqual([[first], [second]])
++  })
++
++  it('leaves ambiguous same-store matches separate, in original order', () => {
++    const first = game('gog', 'first')
++    const other = game('nile', 'other', 'Other Game')
++    const epic = game('legendary', 'epic')
++    const second = game('gog', 'second')
++    expect(groupGameCopies([first, other, epic, second])).toEqual([
++      [first],
++      [other],
++      [epic],
++      [second]
++    ])
++  })
++
++  it('deduplicates repeated records before counting', () => {
++    const epic = game('legendary', 'same-id')
++    const gog = game('gog', 'same-id')
++    expect(groupGameCopies([epic, { ...epic }, gog])).toEqual([[epic, gog]])
++  })
++
++  it('excludes DLC without suppressing the base game', () => {
++    const epic = game('legendary', 'epic')
++    const dlc = game('gog', 'dlc', 'Example Game', {
++      install: { is_dlc: true }
++    })
++    const gog = game('gog', 'base')
++    expect(groupGameCopies([dlc, epic, gog])).toEqual([[epic, gog]])
++  })
++
++  it('applies the installed-only filter before counting copies', () => {
++    const epic = game('legendary', 'epic')
++    const gog = game('gog', 'gog', 'Example Game', { is_installed: true })
++    expect(groupGameCopies([epic, gog], true)).toEqual([[gog]])
++    expect(groupGameCopies([epic], true)).toEqual([])
++  })
++
++  it('counts only copies supplied by the current library filters', () => {
++    const epic = game('legendary', 'epic')
++    const gog = game('gog', 'gog')
++    const library = [epic, gog]
++    expect(
++      groupGameCopies(library.filter((copy) => copy.runner === 'gog'))
++    ).toEqual([[gog]])
++  })
++
++  it('preserves first-occurrence order without mutating input', () => {
++    const epic = Object.freeze(game('legendary', 'epic'))
++    const other = Object.freeze(game('gog', 'other', 'Other Game'))
++    const gog = Object.freeze(game('gog', 'gog'))
++    const library = Object.freeze([epic, other, gog])
++    expect(groupGameCopies(library)).toEqual([[epic, gog], [other]])
++    expect(library).toEqual([epic, other, gog])
++    expect(groupGameCopies(library)[0][0]).toBe(epic)
++  })
++
++  it('matches store titles rather than user display-name overrides', () => {
++    const epic = game('legendary', 'epic', 'Example Game', {
++      overrides: { title: 'My custom name' }
++    })
++    const gog = game('gog', 'gog')
++    const other = game('nile', 'other', 'Other Game', {
++      overrides: { title: 'Example Game' }
++    })
++    expect(groupGameCopies([epic, gog, other])).toEqual([[epic, gog], [other]])
++  })
++
++  it('leaves empty and punctuation-only titles separate', () => {
++    const copies = [
++      game('legendary', 'empty', ''),
++      game('gog', 'empty', '  '),
++      game('legendary', 'punctuation', '™:—'),
++      game('gog', 'punctuation', '® -')
++    ]
++    expect(groupGameCopies(copies)).toEqual(copies.map((copy) => [copy]))
++  })
++
++  it('handles empty input', () => {
++    expect(groupGameCopies([])).toEqual([])
++  })
++})
++
++describe('getGameStackRepresentative', () => {
++  it('prefers an installed copy', () => {
++    const epic = game('legendary', 'epic')
++    const gog = game('gog', 'gog', 'Example Game', { is_installed: true })
++    expect(getGameStackRepresentative([epic, gog])).toBe(gog)
++  })
++
++  it('keeps an active copy visible ahead of an idle installed copy', () => {
++    const epic = game('legendary', 'epic', 'Example Game', {
++      is_installed: true
++    })
++    const gog = game('gog', 'gog')
++    expect(
++      getGameStackRepresentative([epic, gog], new Set([getGameIdentity(gog)]))
++    ).toBe(gog)
++  })
++
++  it('uses both runner and app ID when selecting the active copy', () => {
++    const epic = game('legendary', 'same-id')
++    const gog = game('gog', 'same-id')
++    expect(
++      getGameStackRepresentative([epic, gog], new Set([getGameIdentity(gog)]))
++    ).toBe(gog)
++  })
++
++  it('preserves input order when multiple copies have equal priority', () => {
++    const epic = game('legendary', 'epic', 'Example Game', {
++      is_installed: true
++    })
++    const gog = game('gog', 'gog', 'Example Game', { is_installed: true })
++    expect(getGameStackRepresentative([epic, gog])).toBe(epic)
++    expect(getGameStackRepresentative([gog, epic])).toBe(gog)
++  })
++
++  it('falls back to the first copy when none is installed', () => {
++    const epic = game('legendary', 'epic')
++    const gog = game('gog', 'gog')
++    expect(getGameStackRepresentative([epic, gog])).toBe(epic)
++  })
++
++  it('returns undefined for an empty stack', () => {
++    expect(getGameStackRepresentative([])).toBeUndefined()
++  })
++})
+diff --git a/src/common/gameStack.ts b/src/common/gameStack.ts
+new file mode 100644
+index 00000000..2184e3f1
+--- /dev/null
++++ b/src/common/gameStack.ts
+@@ -0,0 +1,87 @@
++import type { GameInfo } from './types'
++
++/** Store IDs are only unique within their runner. */
++export function getGameIdentity(
++  game: Pick<GameInfo, 'runner' | 'app_name'>
++): string {
++  return JSON.stringify([game.runner, game.app_name])
++}
++
++/** Keep edition names, sequel numbers and accents: this is not fuzzy matching. */
++function normalizeStackTitle(title: string): string {
++  return title
++    .replace(/[™®©]/g, '')
++    .normalize('NFKC')
++    .toLowerCase()
++    .replace(/['‘’]/g, '')
++    .replace(/[:\-‐‑‒–—]/g, ' ')
++    .replace(/\s+/g, ' ')
++    .trim()
++}
++
++/**
++ * Group an already filtered library without changing its order or game objects.
++ * Sideloads, blank titles and ambiguous same-store matches stay separate.
++ */
++export function groupGameCopies(
++  library: readonly GameInfo[],
++  onlyInstalled = false
++): GameInfo[][] {
++  const seen = new Set<string>()
++  const games = library.filter((game) => {
++    if (game.runner !== 'sideload' && game.install.is_dlc) return false
++    if (onlyInstalled && !game.is_installed) return false
++
++    const identity = getGameIdentity(game)
++    if (seen.has(identity)) return false
++    seen.add(identity)
++    return true
++  })
++
++  const candidates = new Map<string, GameInfo[]>()
++  for (const game of games) {
++    if (game.runner === 'sideload') continue
++    // Use the store title, not a user-supplied display-name override.
++    const title = normalizeStackTitle(game.title)
++    if (!title) continue
++    const copies = candidates.get(title)
++    if (copies) copies.push(game)
++    else candidates.set(title, [game])
++  }
++
++  const stackable = new Map<string, GameInfo[]>()
++  for (const [title, copies] of candidates) {
++    if (
++      copies.length > 1 &&
++      new Set(copies.map(({ runner }) => runner)).size === copies.length
++    ) {
++      stackable.set(title, copies)
++    }
++  }
++
++  const result: GameInfo[][] = []
++  const emitted = new Set<string>()
++  for (const game of games) {
++    const title = normalizeStackTitle(game.title)
++    const copies = game.runner === 'sideload' ? undefined : stackable.get(title)
++    if (!copies) {
++      result.push([game])
++    } else if (!emitted.has(title)) {
++      result.push(copies)
++      emitted.add(title)
++    }
++  }
++  return result
++}
++
++/** Keep running/download operations visible, then prefer an installed copy. */
++export function getGameStackRepresentative(
++  copies: readonly GameInfo[],
++  activeGames: ReadonlySet<string> = new Set()
++): GameInfo | undefined {
++  return (
++    copies.find((game) => activeGames.has(getGameIdentity(game))) ??
++    copies.find((game) => game.is_installed) ??
++    copies[0]
++  )
++}
+diff --git a/src/common/jest.config.js b/src/common/jest.config.js
+new file mode 100644
+index 00000000..0af083f2
+--- /dev/null
++++ b/src/common/jest.config.js
+@@ -0,0 +1,11 @@
++module.exports = {
++  displayName: 'Common',
++  rootDir: '../..',
++  roots: ['<rootDir>/src/common'],
++  testEnvironment: 'node',
++  testMatch: ['**/__tests__/**/*.test.ts'],
++  transform: {
++    '^.+\\.tsx?$': 'ts-jest'
++  },
++  modulePaths: ['<rootDir>/src']
++}
+diff --git a/src/frontend/screens/Library/components/GameCard/index.tsx b/src/frontend/screens/Library/components/GameCard/index.tsx
+index 3cffafdb..c8ca2fe3 100644
+--- a/src/frontend/screens/Library/components/GameCard/index.tsx
++++ b/src/frontend/screens/Library/components/GameCard/index.tsx
+@@ -53,6 +53,7 @@ import {
+ } from '@mui/icons-material'
+ import EditGameDialog from 'frontend/components/UI/EditGameDialog'
+ import { openInstallGameModal } from 'frontend/state/InstallGameModal'
++import GameCopies from '../GameCopies'
+ 
+ interface Card {
+   buttonClick: () => void
+@@ -60,6 +61,7 @@ interface Card {
+   isRecent: boolean
+   justPlayed: boolean
+   gameInfo: GameInfo
++  copies?: readonly GameInfo[]
+   forceCard?: boolean
+   dataTour?: string
+ }
+@@ -73,6 +75,7 @@ const GameCard = ({
+   isRecent = false,
+   justPlayed = false,
+   gameInfo: gameInfoFromProps,
++  copies = [],
+   dataTour
+ }: Card) => {
+   const [visible, setVisible] = useState(false)
+@@ -479,6 +482,7 @@ const GameCard = ({
+               {t('status.hasUpdates')}
+             </span>
+           )}
++          <GameCopies copies={copies} title={title} />
+           <Link
+             to={`/gamepage/${runner}/${appName}`}
+             state={{ gameInfo }}
+diff --git a/src/frontend/screens/Library/components/GameCopies/index.css b/src/frontend/screens/Library/components/GameCopies/index.css
+new file mode 100644
+index 00000000..eaab1c49
+--- /dev/null
++++ b/src/frontend/screens/Library/components/GameCopies/index.css
+@@ -0,0 +1,102 @@
++.gameCopiesBadge {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  width: 2rem;
++  height: 2rem;
++  padding: 0;
++  border: 1px solid var(--text-default);
++  border-radius: 50%;
++  background: var(--background-darker);
++  color: var(--text-default);
++  font-family: var(--primary-font-family);
++  font-size: var(--text-sm);
++  font-weight: var(--bold);
++  line-height: 1;
++  cursor: pointer;
++  z-index: 6;
++}
++
++.gameCopiesBadge:hover {
++  border-color: var(--accent);
++  color: var(--accent);
++}
++
++.gameCopiesBadge:focus-visible {
++  outline: 2px solid var(--accent);
++  outline-offset: 2px;
++}
++
++.gameCard > .gameCopiesBadge {
++  position: absolute;
++  top: var(--space-2xs-fixed);
++  left: var(--space-2xs-fixed);
++}
++
++.gameCard:has(> .gameCopiesBadge) > .gameCardStatus,
++.gameCard:has(> .gameCopiesBadge) .gameCardUpdateBadge {
++  top: calc(2rem + var(--space-sm-fixed));
++}
++
++.gameCard:has(> .gameCopiesBadge):has(.gameCardStatus) .gameCardUpdateBadge {
++  top: calc(2rem + var(--space-sm-fixed) + 30px);
++}
++
++/* Reserve the end of the store column; keep the existing list/header grid. */
++.gameListItem > .gameCopiesBadge {
++  position: absolute;
++  inset-inline-end: calc(10% + var(--space-2xs-fixed));
++  top: 50%;
++  transform: translateY(-50%);
++}
++
++.gameListItem:has(> .gameCopiesBadge) .runner {
++  padding-inline-end: calc(2rem + var(--space-xs-fixed));
++}
++
++.gameCopiesList {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-sm);
++  padding: 0;
++  margin: var(--space-md) 0;
++  list-style: none;
++}
++
++.gameCopiesList .gameCopiesLink {
++  display: flex;
++  align-items: center;
++  gap: var(--space-sm);
++  padding: var(--space-sm);
++  border: 1px solid var(--text-secondary);
++  border-radius: var(--space-3xs);
++  color: var(--text-default);
++  text-decoration: none;
++}
++
++.gameCopiesLink:hover,
++.gameCopiesLink:focus-visible {
++  border-color: var(--accent);
++  outline: 2px solid var(--accent);
++  outline-offset: 2px;
++}
++
++.gameCopiesLink .store-icon {
++  flex: 0 0 2rem;
++  width: 2rem;
++  height: 2rem;
++  fill: currentColor;
++}
++
++.gameCopiesDetails {
++  display: flex;
++  flex: 1;
++  flex-direction: column;
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++
++.gameCopiesStatus {
++  flex: 0 0 auto;
++  font-size: var(--text-sm);
++}
+diff --git a/src/frontend/screens/Library/components/GameCopies/index.tsx b/src/frontend/screens/Library/components/GameCopies/index.tsx
+new file mode 100644
+index 00000000..5243e2dd
+--- /dev/null
++++ b/src/frontend/screens/Library/components/GameCopies/index.tsx
+@@ -0,0 +1,101 @@
++import './index.css'
++
++import { useState } from 'react'
++import { Link } from 'react-router-dom'
++import { useTranslation } from 'react-i18next'
++import type { GameInfo } from 'common/types'
++import { getGameIdentity } from 'common/gameStack'
++import { getStoreName } from 'frontend/helpers'
++import StoreLogos from 'frontend/components/UI/StoreLogos'
++import {
++  Dialog,
++  DialogContent,
++  DialogFooter,
++  DialogHeader
++} from 'frontend/components/UI/Dialog'
++
++interface Props {
++  copies: readonly GameInfo[]
++  title: string
++}
++
++export default function GameCopies({ copies, title }: Props) {
++  const { t } = useTranslation()
++  const [open, setOpen] = useState(false)
++  const onClose = () => setOpen(false)
++
++  if (copies.length < 2) return null
++
++  const label = t('gameCopies.show', {
++    defaultValue: 'Show {{count}} copies of {{title}}',
++    count: copies.length,
++    title
++  })
++
++  return (
++    <>
++      <button
++        type="button"
++        className="gameCopiesBadge"
++        title={label}
++        aria-label={label}
++        aria-haspopup="dialog"
++        aria-expanded={open}
++        onClick={(event) => {
++          event.stopPropagation()
++          setOpen(true)
++        }}
++      >
++        {copies.length}
++      </button>
++      {open && (
++        <Dialog onClose={onClose} showCloseButton className="gameCopiesDialog">
++          <DialogHeader onClose={onClose}>
++            {t('gameCopies.title', {
++              defaultValue: 'Copies of {{title}}',
++              title
++            })}
++          </DialogHeader>
++          <DialogContent>
++            <p>
++              {t(
++                'gameCopies.description',
++                'Choose a store version to open its game page. Each copy keeps its own installation and settings.'
++              )}
++            </p>
++            <ul className="gameCopiesList">
++              {copies.map((gameInfo) => (
++                <li key={getGameIdentity(gameInfo)}>
++                  <Link
++                    className="gameCopiesLink"
++                    to={`/gamepage/${gameInfo.runner}/${gameInfo.app_name}`}
++                    state={{ gameInfo }}
++                    onClick={onClose}
++                  >
++                    <StoreLogos runner={gameInfo.runner} />
++                    <span className="gameCopiesDetails">
++                      <strong>
++                        {getStoreName(gameInfo.runner, t('Other'))}
++                      </strong>
++                      <span>{gameInfo.overrides?.title || gameInfo.title}</span>
++                    </span>
++                    <span className="gameCopiesStatus">
++                      {gameInfo.is_installed
++                        ? t('gameCopies.installed', 'Installed')
++                        : t('gameCopies.notInstalled', 'Not installed')}
++                    </span>
++                  </Link>
++                </li>
++              ))}
++            </ul>
++          </DialogContent>
++          <DialogFooter>
++            <button type="button" className="button outline" onClick={onClose}>
++              {t('gamepage:box.close', 'Close')}
++            </button>
++          </DialogFooter>
++        </Dialog>
++      )}
++    </>
++  )
++}
+diff --git a/src/frontend/screens/Library/components/GamesList/index.tsx b/src/frontend/screens/Library/components/GamesList/index.tsx
+index aa18e59a..9c6a6407 100644
+--- a/src/frontend/screens/Library/components/GamesList/index.tsx
++++ b/src/frontend/screens/Library/components/GamesList/index.tsx
+@@ -1,5 +1,10 @@
+-import React, { useContext, useEffect, useRef } from 'react'
++import React, { useContext, useEffect, useMemo, useRef } from 'react'
+ import { GameInfo, Runner } from 'common/types'
++import {
++  getGameIdentity,
++  getGameStackRepresentative,
++  groupGameCopies
++} from 'common/gameStack'
+ import cx from 'classnames'
+ import GameCard from '../GameCard'
+ import ContextProvider from 'frontend/state/ContextProvider'
+@@ -49,14 +54,49 @@ const GamesList = ({
+   isRecent = false,
+   isFavourite = false
+ }: Props): JSX.Element => {
+-  const { gameUpdates, allTilesInColor, titlesAlwaysVisible } =
+-    useContext(ContextProvider)
++  const {
++    gameUpdates,
++    allTilesInColor,
++    titlesAlwaysVisible,
++    libraryStatus,
++    activeController
++  } = useContext(ContextProvider)
+   const { t } = useTranslation()
+   const listRef = useRef<HTMLDivElement | null>(null)
+-  const { activeController } = useContext(ContextProvider)
++
++  const cards = useMemo(() => {
++    const activeGames = new Set(
++      libraryStatus
++        .filter(({ status }) =>
++          [
++            'playing',
++            'launching',
++            'installing',
++            'updating',
++            'uninstalling',
++            'queued',
++            'syncing-saves',
++            'repairing',
++            'verifying',
++            'winetricks',
++            'redist'
++          ].includes(status)
++        )
++        .flatMap(({ appName, runner }) => {
++          // A status without a runner cannot identify a specific store copy.
++          if (!runner) return []
++          return [getGameIdentity({ app_name: appName, runner })]
++        })
++    )
++
++    return groupGameCopies(library, onlyInstalled).flatMap((copies) => {
++      const gameInfo = getGameStackRepresentative(copies, activeGames)
++      return gameInfo ? [{ gameInfo, copies }] : []
++    })
++  }, [library, onlyInstalled, libraryStatus])
+ 
+   useEffect(() => {
+-    if (library.length) {
++    if (cards.length) {
+       const options = {
+         rootMargin: '500px',
+         threshold: 0
+@@ -86,7 +126,7 @@ const GamesList = ({
+ 
+       const observer = new IntersectionObserver(callback, options)
+ 
+-      document.querySelectorAll('[data-invisible]').forEach((card) => {
++      listRef.current?.querySelectorAll('[data-invisible]').forEach((card) => {
+         observer.observe(card)
+       })
+ 
+@@ -95,7 +135,7 @@ const GamesList = ({
+       }
+     }
+     return () => ({})
+-  }, [library])
++  }, [cards])
+ 
+   useEffect(() => {
+     if (listRef.current && activeController) {
+@@ -115,7 +155,7 @@ const GamesList = ({
+ 
+   return (
+     <div
+-      style={!library.length ? { backgroundColor: 'transparent' } : {}}
++      style={!cards.length ? { backgroundColor: 'transparent' } : {}}
+       className={cx({
+         gameList: layout === 'grid',
+         gameListLayout: layout === 'list',
+@@ -133,39 +173,29 @@ const GamesList = ({
+           <span>{t('wine.actions', 'Action')}</span>
+         </div>
+       )}
+-      {!!library.length &&
+-        library.map((gameInfo, index) => {
+-          const { app_name, is_installed, runner } = gameInfo
+-          const isJustPlayed = (isFavourite || isRecent) && index === 0
+-          let is_dlc = false
+-          if (gameInfo.runner !== 'sideload') {
+-            is_dlc = gameInfo.install.is_dlc ?? false
+-          }
+-
+-          if (is_dlc) {
+-            return null
+-          }
+-          if (!is_installed && onlyInstalled) {
+-            return null
+-          }
+-
+-          const hasUpdate = is_installed && gameUpdates?.includes(app_name)
+-          return (
+-            <GameCard
+-              key={`${runner}_${app_name}${isFirstLane ? '_firstlane' : ''}`}
+-              hasUpdate={hasUpdate}
+-              buttonClick={() => {
+-                if (gameInfo.runner !== 'sideload')
+-                  handleGameCardClick(app_name, runner, gameInfo)
+-              }}
+-              forceCard={layout === 'grid'}
+-              isRecent={isRecent}
+-              gameInfo={gameInfo}
+-              justPlayed={isJustPlayed}
+-              dataTour={index === 0 ? 'library-game-card' : undefined}
+-            />
+-          )
+-        })}
++      {cards.map(({ gameInfo, copies }, index) => {
++        const { app_name, is_installed, runner } = gameInfo
++        const isJustPlayed = (isFavourite || isRecent) && index === 0
++        const hasUpdate = Boolean(
++          is_installed && gameUpdates?.includes(app_name)
++        )
++        return (
++          <GameCard
++            key={getGameIdentity(gameInfo)}
++            hasUpdate={hasUpdate}
++            buttonClick={() => {
++              if (gameInfo.runner !== 'sideload')
++                handleGameCardClick(app_name, runner, gameInfo)
++            }}
++            forceCard={layout === 'grid'}
++            isRecent={isRecent}
++            gameInfo={gameInfo}
++            copies={copies}
++            justPlayed={isJustPlayed}
++            dataTour={index === 0 ? 'library-game-card' : undefined}
++          />
++        )
++      })}
+     </div>
+   )
+ }
+-- 
+2.55.0
+

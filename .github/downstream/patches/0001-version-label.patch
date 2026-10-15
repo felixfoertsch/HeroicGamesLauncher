@@ -1,0 +1,47 @@
+From 5024712f4844ddb8d9c7029b2513081d4cf8ebf4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
+Date: Wed, 7 Oct 2026 07:19:23 +0200
+Subject: [PATCH] feat: Show upstream version and downstream patch count
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Display reconstruction-stamped upstream version and accepted queue count in sidebar without changing updater versions.
+---
+ src/common/downstreamVersion.ts                                | 2 ++
+ .../components/UI/Sidebar/components/HeroicVersion/index.tsx   | 3 ++-
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+ create mode 100644 src/common/downstreamVersion.ts
+
+diff --git a/src/common/downstreamVersion.ts b/src/common/downstreamVersion.ts
+new file mode 100644
+index 00000000..7e25f821
+--- /dev/null
++++ b/src/common/downstreamVersion.ts
+@@ -0,0 +1,2 @@
++// Reconstruction stamps upstream version and accepted queue length before builds.
++export const downstreamVersion: string | undefined = undefined
+diff --git a/src/frontend/components/UI/Sidebar/components/HeroicVersion/index.tsx b/src/frontend/components/UI/Sidebar/components/HeroicVersion/index.tsx
+index 5e245763..d68fe0ec 100644
+--- a/src/frontend/components/UI/Sidebar/components/HeroicVersion/index.tsx
++++ b/src/frontend/components/UI/Sidebar/components/HeroicVersion/index.tsx
+@@ -5,6 +5,7 @@ import { ChangelogModal } from '../../../ChangelogModal'
+ import TourButton from 'frontend/components/Tour/TourButton'
+ import { SIDEBAR_TOUR_ID } from '../SidebarTour'
+ import './index.scss'
++import { downstreamVersion } from 'common/downstreamVersion'
+ 
+ type Release = {
+   html_url: string
+@@ -58,7 +59,7 @@ export default React.memo(function HeroicVersion() {
+   )[0]
+   const shouldShowUpdates = newBeta || newStable
+ 
+-  const version = heroicVersion
++  const version = downstreamVersion ?? heroicVersion
+ 
+   return (
+     <div className="heroicVersionContainer" data-tour="sidebar-version">
+-- 
+2.55.0
+

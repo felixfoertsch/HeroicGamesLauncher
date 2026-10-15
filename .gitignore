@@ -37,3 +37,6 @@ flatpak-build
 .env
 
 playwright-report
+
+__pycache__/
+*.pyc
