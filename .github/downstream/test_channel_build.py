@@ -13,6 +13,8 @@ class ChannelBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); repo = root / "patch-queue"; source = root / "source"; output = root / "output"
             d.command(["git", "init", "-b", "patch-queue", str(repo)])
+            d.git(repo, "config", "maintenance.autoDetach", "false")
+            d.git(repo, "config", "gc.autoDetach", "false")
             (repo / "package.json").write_text(json.dumps({"version": "2.0.0"}))
             (repo / 'README.md').write_text('Fork intro\n\n# Downstream patches\n\nNone accepted.\n\n---\n\nUpstream README\n')
             (repo / ".github/workflows").mkdir(parents=True); (repo / ".github/workflows/ci.yml").write_text("on: push\n")
@@ -20,6 +22,8 @@ class ChannelBuildTests(unittest.TestCase):
             d.git(repo, "add", "."); d.git(repo, "commit", "-m", "patch-queue")
             upstream = d.git(repo, "rev-parse", "HEAD")
             remote = root / "origin.git"; d.command(["git", "init", "--bare", str(remote)])
+            d.git(remote, "config", "maintenance.autoDetach", "false")
+            d.git(remote, "config", "gc.autoDetach", "false")
             d.git(repo, "remote", "add", "origin", str(remote)); d.git(repo, "push", "origin", "patch-queue")
             plan = c.prepare(repo, source, output, upstream, "v2.0.0", "nightly", "123.1")
             self.assertEqual(plan["channel"], "nightly")
@@ -51,6 +55,8 @@ class ChannelBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); repo = root / 'patch-queue'
             d.command(['git', 'init', '-b', 'patch-queue', str(repo)])
+            d.git(repo, 'config', 'maintenance.autoDetach', 'false')
+            d.git(repo, 'config', 'gc.autoDetach', 'false')
             (repo / 'package.json').write_text(json.dumps({'version': '2.0.0'}))
             (repo / 'README.md').write_text('Fork intro\n\n---\n\nUpstream README\n')
             (repo / 'game.txt').write_text('separate\n')
@@ -70,6 +76,8 @@ class ChannelBuildTests(unittest.TestCase):
             (queue / '0001-stack.patch').write_text(mail + '\n')
             d.git(repo, 'add', '.'); d.git(repo, 'commit', '-m', 'queue')
             remote = root / 'origin.git'; d.command(['git', 'init', '--bare', str(remote)])
+            d.git(remote, 'config', 'maintenance.autoDetach', 'false')
+            d.git(remote, 'config', 'gc.autoDetach', 'false')
             d.git(repo, 'remote', 'add', 'origin', str(remote)); d.git(repo, 'push', 'origin', 'patch-queue')
             plan = c.prepare(repo, root / 'source', root / 'output', upstream, 'v2.0.0', 'nightly', '123.1')
             self.assertEqual((root / 'source/game.txt').read_text(), 'stacked\n')

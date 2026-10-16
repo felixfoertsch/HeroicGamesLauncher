@@ -33,6 +33,10 @@ class DownstreamTests(unittest.TestCase):
         self.remote = self.root / "origin.git"
         d.command(["git", "init", "-b", "main", str(self.repo)])
         d.command(["git", "init", "--bare", str(self.remote)])
+        # Maintenance must finish before TemporaryDirectory removes either repository.
+        for repo in (self.repo, self.remote):
+            d.git(repo, "config", "maintenance.autoDetach", "false")
+            d.git(repo, "config", "gc.autoDetach", "false")
         self.base = self.commit({"package.json": json.dumps({"version": "2.0.0", "packageManager": "pnpm@10.28.0"}),
                                  "shared.txt": "original\n"}, "upstream baseline")
         self.a = self.commit({"a.txt": "feature A\n"}, "feature A")
@@ -231,6 +235,19 @@ class DownstreamTests(unittest.TestCase):
         (self.output / "unexpected.txt").write_text("not verified")
         with self.assertRaisesRegex(ValueError, "Artifact set"):
             d.checksums(self.output, verify=True)
+
+    def test_git_maintenance_runs_in_foreground(self):
+        trace = self.root / "git-trace.jsonl"
+        with patch.dict(os.environ, {"GIT_TRACE2_EVENT": str(trace)}):
+            self.commit({"maintenance.txt": "wait for writers\n"}, "maintenance check")
+            d.git(self.repo, "push", "origin", "main")
+        events = [json.loads(line) for line in trace.read_text().splitlines()]
+        maintenance = [event["argv"] for event in events
+                       if event["event"] == "child_start"
+                       and event["argv"][:3] == ["git", "maintenance", "run"]]
+        self.assertTrue(maintenance)
+        for argv in maintenance:
+            self.assertNotIn("--detach", argv)
 
     def test_lease_catches_race_after_prechecks(self):
         self.plan(self.upstream())

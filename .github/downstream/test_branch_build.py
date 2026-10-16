@@ -55,6 +55,9 @@ class BranchGitTests(unittest.TestCase):
         self.remote = self.root / "origin.git"; self.out = self.root / "out"; self.source = self.root / "source"
         d.command(["git", "init", "-b", "main", str(self.repo)])
         d.command(["git", "init", "--bare", str(self.remote)])
+        for repo in (self.repo, self.remote):
+            d.git(repo, "config", "maintenance.autoDetach", "false")
+            d.git(repo, "config", "gc.autoDetach", "false")
         self.base = self.commit({"package.json": '{"version":"2.22.1"}\n'}, "upstream")
         self.ci = self.commit({"ci.txt": "automation\n"}, "ci: Builds\n\n" + b.CI_MARKER)
         d.git(self.repo, "remote", "add", "origin", str(self.remote))
