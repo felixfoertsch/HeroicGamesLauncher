@@ -26,7 +26,7 @@ def command(argv, *, cwd=None, data=None):
 
 
 def git(repo, *args, data=None):
-    return command(["git", "-C", str(repo), "-c", "user.name=Heroic downstream",
+    return command(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "-c", "user.name=Heroic downstream",
                     "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
                     *args], data=data)
 

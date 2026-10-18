@@ -1,3 +1,7 @@
+# Fork-only working agreement
+
+This section governs this fork. Upstream submission guidance follows separately.
+
 # Downstream working agreement
 
 These instructions record Felix's requirements for this fork. Preserve upstream contribution guidance and keep upstream-only submissions distinct from CI-enabled development branches.
@@ -14,7 +18,7 @@ These instructions record Felix's requirements for this fork. Preserve upstream 
 
 ## Branches and releases
 
-- `patch-queue` owns workflows and ordered accepted patch files. Generated `main` tracks upstream main plus trusted downstream publisher tooling, with no workflow files. Stable and nightly are release channels, not source branches. The four accepted patches include stacking and Nile session recovery. Future unfinished work stays outside the accepted queue and generated `main`.
+- `patch-queue` automatically refreshes actual upstream default-branch source plus all accepted patches and an explicit trusted control overlay. Accepted patch files remain source-customization authority. Each rewrite requires a verified self-contained backup, permanent lightweight `archive/patch-queue/<full-old-control-SHA>` tag and atomic expected-SHA leases; never retag or delete archives. Identical intended trees with current upstream ancestry are no-ops. `patch-queue` owns workflows and ordered accepted patch files. Generated `main` tracks upstream main plus trusted downstream publisher tooling, with no workflow files. Stable and nightly are release channels, not source branches. The four accepted patches include stacking and Nile session recovery. Future unfinished work stays outside the accepted queue and generated `main`.
 - Keep only `patch-queue` (default, workflows and accepted patches) and generated `main` as long-lived branches. Archive obsolete branch tips before removal. Publishers never execute downloaded branch code with write credentials; preview jobs receive no production signing secrets and never update stable channels or Latest.
 - Releases are cumulative. Current baseline contains four accepted patches; adding patch five triggers the release pipeline and publishes upstream plus all five patches for stable and nightly. Keep the previous upstream-plus-four releases alongside the new releases, and retain subsequent release history. Pushes adding accepted patches to `patch-queue` automatically trigger publication after validation. Old-release cleanup was a one-time operation, not an automatic retention policy. Pacman and AppImage feed records are delivery methods; retain their working endpoints.
 - Only stable may update Latest, `downstream-feed` and signed `pacman`. Nightly is isolated prerelease output and syncs generated `main` only under an expected-SHA lease. Preserve signing, full build validation and safeguards against accidental artifact overwrite.
@@ -27,3 +31,14 @@ These instructions record Felix's requirements for this fork. Preserve upstream 
 ## Checks
 
 Run the checks relevant to the change before considering it complete. The downstream pipeline includes Python/real-Git automation tests, TypeScript, Jest, ESLint, Prettier, Linux packaging, and a disposable-key pacman signature/download test. Report exactly which checks ran and any remaining limitations.
+
+
+---
+
+# Upstream submission guidance (pristine)
+
+#### PR information
+
+If you are asked to create a pull request on your operator's behalf, you **MUST** follow the template at
+`.github/pull_request_template.md`. Do not disregard the template and generate your own description, the template
+**MUST** be used for a PR to be valid.
