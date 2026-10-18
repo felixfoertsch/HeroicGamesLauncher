@@ -233,6 +233,14 @@ class RefreshTests(unittest.TestCase):
                 r.promote(self.repo, result, self.current, 'main', self.base, bundle, str(bundle) + '.json')
             self.assertFalse(any(call.args[0][:2] == ['gh', 'workflow'] for call in run.call_args_list))
 
+    def test_credential_steps_use_writable_isolated_git_config(self):
+        workflow = (Path(__file__).parents[1] / 'workflows/channel.yml').read_text()
+        self.assertIn("GIT_CONFIG_GLOBAL: /dev/null", workflow)
+        self.assertEqual(workflow.count('GIT_CONFIG_GLOBAL: ${{ runner.temp }}/heroic-trusted-gitconfig'), 2)
+        for block in workflow.split('\n      - '):
+            if 'gh auth setup-git' in block:
+                self.assertIn('GIT_CONFIG_GLOBAL: ${{ runner.temp }}/heroic-trusted-gitconfig', block)
+
     def test_archive_namespace_excluded_from_release_selectors(self):
         from calver import RELEASE_TAG, next_version
         from release_cleanup import LEGACY_TAG

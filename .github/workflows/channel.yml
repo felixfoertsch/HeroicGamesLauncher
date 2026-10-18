@@ -83,6 +83,7 @@ jobs:
           digest-mismatch: error
           path: refresh-download
       - env:
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/heroic-trusted-gitconfig
           GH_TOKEN: ${{ github.token }}
           REBUILD: ${{ inputs.rebuild || false }}
         run: |
@@ -360,6 +361,7 @@ jobs:
       - name: Guarded immutable publication
         if: steps.decision.outputs.build == 'true'
         env:
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/heroic-trusted-gitconfig
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ matrix.channel }}
           SIGNED: ${{ steps.sign.outputs.signed }}
