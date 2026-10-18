@@ -152,6 +152,8 @@ class RefreshTests(unittest.TestCase):
         result = self.build('composed', upstream)
         text = (self.root / 'composed/AGENTS.md').read_text()
         self.assertTrue(text.endswith('reviewed upstream policy\n'))
+        self.assertIn('trusted agreement\n\n---\n', text)
+        self.assertNotIn('trusted agreement\n\n\n---\n', text)
         self.assertEqual(text.count('trusted agreement'), 1)
         self.assertEqual(text.count('reviewed upstream policy'), 1)
         git(self.repo, 'reset', '--hard', result)

@@ -32,7 +32,6 @@ These instructions record Felix's requirements for this fork. Preserve upstream 
 
 Run the checks relevant to the change before considering it complete. The downstream pipeline includes Python/real-Git automation tests, TypeScript, Jest, ESLint, Prettier, Linux packaging, and a disposable-key pacman signature/download test. Report exactly which checks ran and any remaining limitations.
 
-
 ---
 
 # Upstream submission guidance (pristine)

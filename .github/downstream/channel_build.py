@@ -36,7 +36,7 @@ def compose_agents(repo, source):
         raise ValueError('Upstream AGENTS.md changed; explicit policy review required')
     target.write_bytes(b'# Fork-only working agreement\n\n'
                        b'This section governs this fork. Upstream submission guidance follows separately.\n\n'
-                       + canonical.read_bytes() + b'\n\n---\n\n# Upstream submission guidance (pristine)\n\n' + upstream)
+                       + canonical.read_bytes() + b'\n---\n\n# Upstream submission guidance (pristine)\n\n' + upstream)
 
 
 def patch_queue(repo):
