@@ -1,4 +1,4 @@
-From 27e4aadb100b150906bb04ca26c52d410c1b4061 Mon Sep 17 00:00:00 2001
+From 0eeb8a4e5d9629504327b723e1562f55cc18e17a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
 Date: Tue, 6 Oct 2026 21:31:45 +0200
 Subject: [PATCH] feat: Stack duplicate cross-store games in the library
@@ -10,14 +10,15 @@ Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Consol
 ---
  doc/game-stacking.md                          |  70 ++++++
  jest.config.js                                |   2 +-
+ public/locales/en/translation.json            |   8 +
  src/common/__tests__/gameStack.test.ts        | 215 ++++++++++++++++++
  src/common/gameStack.ts                       |  87 +++++++
  src/common/jest.config.js                     |  11 +
  .../Library/components/GameCard/index.tsx     |   4 +
- .../Library/components/GameCopies/index.css   | 102 +++++++++
+ .../Library/components/GameCopies/index.css   |  98 ++++++++
  .../Library/components/GameCopies/index.tsx   | 101 ++++++++
  .../Library/components/GamesList/index.tsx    | 112 +++++----
- 9 files changed, 662 insertions(+), 42 deletions(-)
+ 10 files changed, 666 insertions(+), 42 deletions(-)
  create mode 100644 doc/game-stacking.md
  create mode 100644 src/common/__tests__/gameStack.test.ts
  create mode 100644 src/common/gameStack.ts
@@ -114,6 +115,25 @@ index be37d675..2fa780e1 100644
  
    rootDir: '.'
  }
+diff --git a/public/locales/en/translation.json b/public/locales/en/translation.json
+index 4e996184..8b933ac4 100644
+--- a/public/locales/en/translation.json
++++ b/public/locales/en/translation.json
+@@ -488,6 +488,14 @@
+         "store": "Store",
+         "title": "Game Title"
+     },
++    "gameCopies": {
++        "description": "Choose a store version to open its game page. Each copy keeps its own installation and settings.",
++        "installed": "Installed",
++        "notInstalled": "Not installed",
++        "show_one": "Show {{count}} copies of {{title}}",
++        "show_other": "Show {{count}} copies of {{title}}",
++        "title": "Copies of {{title}}"
++    },
+     "General": "General",
+     "generic": {
+         "abort": "Abort",
 diff --git a/src/common/__tests__/gameStack.test.ts b/src/common/__tests__/gameStack.test.ts
 new file mode 100644
 index 00000000..344f526f
@@ -446,18 +466,18 @@ index 00000000..0af083f2
 +  modulePaths: ['<rootDir>/src']
 +}
 diff --git a/src/frontend/screens/Library/components/GameCard/index.tsx b/src/frontend/screens/Library/components/GameCard/index.tsx
-index 3cffafdb..c8ca2fe3 100644
+index 66a3cd4e..e6b8884c 100644
 --- a/src/frontend/screens/Library/components/GameCard/index.tsx
 +++ b/src/frontend/screens/Library/components/GameCard/index.tsx
-@@ -53,6 +53,7 @@ import {
- } from '@mui/icons-material'
+@@ -51,6 +51,7 @@ import LibraryContext from '../../LibraryContext'
+ import useGlobalState from 'frontend/state/GlobalStateV2'
  import EditGameDialog from 'frontend/components/UI/EditGameDialog'
  import { openInstallGameModal } from 'frontend/state/InstallGameModal'
 +import GameCopies from '../GameCopies'
  
  interface Card {
    buttonClick: () => void
-@@ -60,6 +61,7 @@ interface Card {
+@@ -58,6 +59,7 @@ interface Card {
    isRecent: boolean
    justPlayed: boolean
    gameInfo: GameInfo
@@ -465,7 +485,7 @@ index 3cffafdb..c8ca2fe3 100644
    forceCard?: boolean
    dataTour?: string
  }
-@@ -73,6 +75,7 @@ const GameCard = ({
+@@ -71,6 +73,7 @@ const GameCard = ({
    isRecent = false,
    justPlayed = false,
    gameInfo: gameInfoFromProps,
@@ -473,9 +493,9 @@ index 3cffafdb..c8ca2fe3 100644
    dataTour
  }: Card) => {
    const [visible, setVisible] = useState(false)
-@@ -479,6 +482,7 @@ const GameCard = ({
+@@ -467,6 +470,7 @@ const GameCard = ({
                {t('status.hasUpdates')}
-             </span>
+             </Badge>
            )}
 +          <GameCopies copies={copies} title={title} />
            <Link
@@ -483,10 +503,10 @@ index 3cffafdb..c8ca2fe3 100644
              state={{ gameInfo }}
 diff --git a/src/frontend/screens/Library/components/GameCopies/index.css b/src/frontend/screens/Library/components/GameCopies/index.css
 new file mode 100644
-index 00000000..eaab1c49
+index 00000000..5501d0b9
 --- /dev/null
 +++ b/src/frontend/screens/Library/components/GameCopies/index.css
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,98 @@
 +.gameCopiesBadge {
 +  display: inline-flex;
 +  align-items: center;
@@ -531,16 +551,12 @@ index 00000000..eaab1c49
 +  top: calc(2rem + var(--space-sm-fixed) + 30px);
 +}
 +
-+/* Reserve the end of the store column; keep the existing list/header grid. */
++/* Keep the chooser above the thumbnail link's full-row hit target. */
 +.gameListItem > .gameCopiesBadge {
-+  position: absolute;
-+  inset-inline-end: calc(10% + var(--space-2xs-fixed));
-+  top: 50%;
-+  transform: translateY(-50%);
-+}
-+
-+.gameListItem:has(> .gameCopiesBadge) .runner {
-+  padding-inline-end: calc(2rem + var(--space-xs-fixed));
++  grid-area: thumb;
++  align-self: end;
++  justify-self: end;
++  transform: translate(25%, 25%);
 +}
 +
 +.gameCopiesList {
@@ -591,7 +607,7 @@ index 00000000..eaab1c49
 +}
 diff --git a/src/frontend/screens/Library/components/GameCopies/index.tsx b/src/frontend/screens/Library/components/GameCopies/index.tsx
 new file mode 100644
-index 00000000..5243e2dd
+index 00000000..e4d17b3f
 --- /dev/null
 +++ b/src/frontend/screens/Library/components/GameCopies/index.tsx
 @@ -0,0 +1,101 @@
@@ -605,11 +621,11 @@ index 00000000..5243e2dd
 +import { getStoreName } from 'frontend/helpers'
 +import StoreLogos from 'frontend/components/UI/StoreLogos'
 +import {
-+  Dialog,
-+  DialogContent,
-+  DialogFooter,
-+  DialogHeader
-+} from 'frontend/components/UI/Dialog'
++  Modal,
++  ModalContent,
++  ModalFooter,
++  ModalHeader
++} from 'frontend/components/UI/Modal'
 +
 +interface Props {
 +  copies: readonly GameInfo[]
@@ -646,14 +662,14 @@ index 00000000..5243e2dd
 +        {copies.length}
 +      </button>
 +      {open && (
-+        <Dialog onClose={onClose} showCloseButton className="gameCopiesDialog">
-+          <DialogHeader onClose={onClose}>
++        <Modal onClose={onClose} showCloseButton className="gameCopiesModal">
++          <ModalHeader>
 +            {t('gameCopies.title', {
 +              defaultValue: 'Copies of {{title}}',
 +              title
 +            })}
-+          </DialogHeader>
-+          <DialogContent>
++          </ModalHeader>
++          <ModalContent>
 +            <p>
 +              {t(
 +                'gameCopies.description',
@@ -685,19 +701,19 @@ index 00000000..5243e2dd
 +                </li>
 +              ))}
 +            </ul>
-+          </DialogContent>
-+          <DialogFooter>
++          </ModalContent>
++          <ModalFooter>
 +            <button type="button" className="button outline" onClick={onClose}>
 +              {t('gamepage:box.close', 'Close')}
 +            </button>
-+          </DialogFooter>
-+        </Dialog>
++          </ModalFooter>
++        </Modal>
 +      )}
 +    </>
 +  )
 +}
 diff --git a/src/frontend/screens/Library/components/GamesList/index.tsx b/src/frontend/screens/Library/components/GamesList/index.tsx
-index aa18e59a..9c6a6407 100644
+index 0f37ee7d..cb47ad66 100644
 --- a/src/frontend/screens/Library/components/GamesList/index.tsx
 +++ b/src/frontend/screens/Library/components/GamesList/index.tsx
 @@ -1,5 +1,10 @@
@@ -712,7 +728,7 @@ index aa18e59a..9c6a6407 100644
  import cx from 'classnames'
  import GameCard from '../GameCard'
  import ContextProvider from 'frontend/state/ContextProvider'
-@@ -49,14 +54,49 @@ const GamesList = ({
+@@ -48,13 +53,48 @@ const GamesList = ({
    isRecent = false,
    isFavourite = false
  }: Props): JSX.Element => {
@@ -725,7 +741,6 @@ index aa18e59a..9c6a6407 100644
 +    libraryStatus,
 +    activeController
 +  } = useContext(ContextProvider)
-   const { t } = useTranslation()
    const listRef = useRef<HTMLDivElement | null>(null)
 -  const { activeController } = useContext(ContextProvider)
 +
@@ -766,7 +781,7 @@ index aa18e59a..9c6a6407 100644
        const options = {
          rootMargin: '500px',
          threshold: 0
-@@ -86,7 +126,7 @@ const GamesList = ({
+@@ -84,7 +124,7 @@ const GamesList = ({
  
        const observer = new IntersectionObserver(callback, options)
  
@@ -775,7 +790,7 @@ index aa18e59a..9c6a6407 100644
          observer.observe(card)
        })
  
-@@ -95,7 +135,7 @@ const GamesList = ({
+@@ -93,7 +133,7 @@ const GamesList = ({
        }
      }
      return () => ({})
@@ -784,7 +799,7 @@ index aa18e59a..9c6a6407 100644
  
    useEffect(() => {
      if (listRef.current && activeController) {
-@@ -115,7 +155,7 @@ const GamesList = ({
+@@ -113,7 +153,7 @@ const GamesList = ({
  
    return (
      <div
@@ -793,10 +808,10 @@ index aa18e59a..9c6a6407 100644
        className={cx({
          gameList: layout === 'grid',
          gameListLayout: layout === 'list',
-@@ -133,39 +173,29 @@ const GamesList = ({
-           <span>{t('wine.actions', 'Action')}</span>
-         </div>
-       )}
+@@ -123,39 +163,29 @@ const GamesList = ({
+       })}
+       ref={listRef}
+     >
 -      {!!library.length &&
 -        library.map((gameInfo, index) => {
 -          const { app_name, is_installed, runner } = gameInfo
@@ -857,5 +872,5 @@ index aa18e59a..9c6a6407 100644
    )
  }
 -- 
-2.55.0
+2.56.0
 

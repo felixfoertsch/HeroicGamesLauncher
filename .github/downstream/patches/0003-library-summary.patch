@@ -1,4 +1,4 @@
-From 56b50e18709afcd07464a18c431750672267b2df Mon Sep 17 00:00:00 2001
+From a26ba926d1a4025f8fff813231a65ad938381996 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
 Date: Tue, 6 Oct 2026 21:52:25 +0200
 Subject: [PATCH] feat: Show library totals in a counter popover
@@ -8,14 +8,37 @@ Content-Transfer-Encoding: 8bit
 
 Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Show filtered per-store counts, unique games, multi-store games, extra copies and installed games using native popover behavior.
 ---
- src/common/__tests__/gameStack.test.ts        |  32 +++++-
- src/common/gameStack.ts                       |  19 ++++
- .../components/LibraryHeader/index.css        |  57 ++++++++++
- .../components/LibraryHeader/index.tsx        | 102 +++++++++++++++---
- 4 files changed, 194 insertions(+), 16 deletions(-)
+ public/locales/en/translation.json            | 10 ++
+ src/common/__tests__/gameStack.test.ts        | 35 ++++++-
+ src/common/gameStack.ts                       | 19 ++++
+ .../components/LibraryHeader/index.css        | 66 +++++++++++++
+ .../components/LibraryHeader/index.tsx        | 95 ++++++++++++++++++-
+ src/frontend/screens/Library/index.tsx        |  2 +-
+ 6 files changed, 221 insertions(+), 6 deletions(-)
 
+diff --git a/public/locales/en/translation.json b/public/locales/en/translation.json
+index 8b933ac4..a70f6d1a 100644
+--- a/public/locales/en/translation.json
++++ b/public/locales/en/translation.json
+@@ -663,6 +663,16 @@
+         }
+     },
+     "Library": "Library",
++    "librarySummary": {
++        "copies": "Total store copies",
++        "duplicates": "Multi-store games",
++        "extra": "Extra copies",
++        "installed": "Installed games",
++        "matching": "Duplicates use matching store titles. Different editions stay separate; installations and settings are never merged.",
++        "scope": "Counts reflect current library filters. DLC is excluded.",
++        "title": "Library summary",
++        "unique": "Unique games"
++    },
+     "loading": {
+         "default": "Loading",
+         "website": "Loading Website"
 diff --git a/src/common/__tests__/gameStack.test.ts b/src/common/__tests__/gameStack.test.ts
-index 344f526f..f1c409d9 100644
+index 344f526f..4b38e547 100644
 --- a/src/common/__tests__/gameStack.test.ts
 +++ b/src/common/__tests__/gameStack.test.ts
 @@ -2,7 +2,8 @@ import type { GameInfo } from '../types'
@@ -28,7 +51,17 @@ index 344f526f..f1c409d9 100644
  } from '../gameStack'
  
  function game(
-@@ -169,6 +170,35 @@ describe('groupGameCopies', () => {
+@@ -36,7 +37,8 @@ describe('groupGameCopies', () => {
+       game('legendary', 'epic'),
+       game('gog', 'gog'),
+       game('nile', 'amazon'),
+-      game('zoom', 'zoom')
++      game('zoom', 'zoom'),
++      game('itchio', 'itchio')
+     ]
+     expect(groupGameCopies(copies)).toEqual([copies])
+   })
+@@ -169,6 +171,35 @@ describe('groupGameCopies', () => {
    })
  })
  
@@ -95,13 +128,14 @@ index 2184e3f1..17f7fc20 100644
  export function getGameStackRepresentative(
    copies: readonly GameInfo[],
 diff --git a/src/frontend/screens/Library/components/LibraryHeader/index.css b/src/frontend/screens/Library/components/LibraryHeader/index.css
-index f0ce9a1e..60ba2ff6 100644
+index 3887a40c..63f0ad61 100644
 --- a/src/frontend/screens/Library/components/LibraryHeader/index.css
 +++ b/src/frontend/screens/Library/components/LibraryHeader/index.css
-@@ -21,6 +21,63 @@
-   box-shadow: 0px 0px 0px 3px var(--button-stroke, var(--text-default));
+@@ -57,3 +57,69 @@
+ .sideloadGameButton svg {
+   flex-shrink: 0;
  }
- 
++
 +.librarySummaryButton {
 +  anchor-name: --library-summary;
 +  border: none;
@@ -159,48 +193,37 @@ index f0ce9a1e..60ba2ff6 100644
 +  padding-top: var(--space-xs);
 +}
 +
- .numberOfgames {
-   font-size: var(--text-md);
-   font-weight: var(--regular);
++.numberOfgames {
++  font-size: var(--text-md);
++  font-weight: var(--regular);
++  background: var(--input-background);
++  padding: var(--space-xs);
++  margin-inline-start: var(--space-sm, 4px);
++  border-radius: var(--space-3xs);
++}
 diff --git a/src/frontend/screens/Library/components/LibraryHeader/index.tsx b/src/frontend/screens/Library/components/LibraryHeader/index.tsx
-index e02f07ab..e8e72bd8 100644
+index 67ac0a56..7fc25fe1 100644
 --- a/src/frontend/screens/Library/components/LibraryHeader/index.tsx
 +++ b/src/frontend/screens/Library/components/LibraryHeader/index.tsx
-@@ -1,7 +1,16 @@
--import React, { useContext, useMemo } from 'react'
-+import React, {
-+  useContext,
-+  useEffect,
-+  useId,
-+  useMemo,
-+  useRef,
-+  useState
-+} from 'react'
- import { useTranslation } from 'react-i18next'
+@@ -1,14 +1,103 @@
+-import React from 'react'
++import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
++import { useTranslation } from 'react-i18next'
  import ActionIcons from 'frontend/components/UI/ActionIcons'
- import { GameInfo } from 'common/types'
++import { GameInfo } from 'common/types'
 +import { summarizeGameCopies } from 'common/gameStack'
 +import { getStoreName } from 'frontend/helpers'
- import LibraryContext from '../../LibraryContext'
+ import Header from 'frontend/components/UI/Header'
  import './index.css'
  import AddGameButton from '../AddGameButton'
-@@ -13,19 +22,17 @@ type Props = {
- export default React.memo(function LibraryHeader({ list }: Props) {
-   const { t } = useTranslation()
-   const { showFavourites } = useContext(LibraryContext)
--
--  const numberOfGames = useMemo(() => {
--    if (!list) {
--      return 0
--    }
--    // is_dlc is only applicable when the game is from legendary, but checking anyway doesn't cause errors and enable accurate counting in the 'ALL' game tab
--    const dlcCount = list.filter(
--      (lib) => lib.runner !== 'sideload' && lib.install.is_dlc
--    ).length
--
--    const total = list.length - dlcCount
--    return total > 0 ? `${total}` : 0
--  }, [list])
+ 
+-export default React.memo(function LibraryHeader() {
++type Props = {
++  list: GameInfo[]
++}
++
++export default React.memo(function LibraryHeader({ list }: Props) {
++  const { t } = useTranslation()
 +  const summary = useMemo(() => summarizeGameCopies(list ?? []), [list])
 +  const id = useId()
 +  const [open, setOpen] = useState(false)
@@ -212,14 +235,12 @@ index e02f07ab..e8e72bd8 100644
 +    element?.addEventListener('toggle', updateOpen)
 +    return () => element?.removeEventListener('toggle', updateOpen)
 +  }, [])
- 
++
    return (
-     <h5 className="libraryHeader" data-tour="library-header">
-@@ -34,7 +41,72 @@ export default React.memo(function LibraryHeader({ list }: Props) {
-           {showFavourites
-             ? t('favourites', 'Favourites')
-             : t('title.allGames', 'All Games')}
--          <span className="numberOfgames">{numberOfGames}</span>
+     <div className="libraryHeader" data-tour="library-header">
+       <div className="libraryHeaderWrapper">
+-        <AddGameButton data-tour="library-add-game" />
++        <span className="libraryTitle">
 +          <button
 +            type="button"
 +            className="numberOfgames librarySummaryButton"
@@ -286,9 +307,24 @@ index e02f07ab..e8e72bd8 100644
 +              )}
 +            </p>
 +          </div>
-           <AddGameButton data-tour="library-add-game" />
-         </span>
-         <ActionIcons />
++          <AddGameButton data-tour="library-add-game" />
++        </span>
+       </div>
+       <div className="libraryToolbar">
+         <Header />
+diff --git a/src/frontend/screens/Library/index.tsx b/src/frontend/screens/Library/index.tsx
+index f896485e..9cb30eac 100644
+--- a/src/frontend/screens/Library/index.tsx
++++ b/src/frontend/screens/Library/index.tsx
+@@ -705,7 +705,7 @@ export default React.memo(function Library(): JSX.Element {
+ 
+       <div className="listing">
+         <span id="top" />
+-        <LibraryHeader />
++        <LibraryHeader list={libraryToShow} />
+ 
+         {showAlphabetFilter && <AlphabetFilter />}
+ 
 -- 
-2.55.0
+2.56.0
 

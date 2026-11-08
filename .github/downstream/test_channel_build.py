@@ -107,12 +107,8 @@ class ChannelBuildTests(unittest.TestCase):
       const loadstop = () => {
         setLoading({ ...loading, refresh: false })
 
-        // only set a custom user agent for Epic, setting a user agent seems to break Cloudflare bot
-        // checks in the GOG login
         if (startUrl === epicLoginUrl) {
-          const userAgent =
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) EpicGamesLauncher'
-          webview.setUserAgent(userAgent)
+          webview.setUserAgent(epicUserAgent)
         }
 '''
         with tempfile.TemporaryDirectory() as temp:

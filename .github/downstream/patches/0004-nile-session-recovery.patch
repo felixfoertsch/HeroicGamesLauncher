@@ -1,4 +1,4 @@
-From c9e1aec0c90688c22ead5e1c229839403cc309ee Mon Sep 17 00:00:00 2001
+From d248de7a6183fc163a9cfddbef9716c9b7a39702 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
 Date: Tue, 6 Oct 2026 22:21:02 +0200
 Subject: [PATCH] fix: Recover Amazon sessions, persist local logout despite
@@ -9,18 +9,19 @@ Content-Transfer-Encoding: 8bit
 
 Prepared by Astra, an OpenAI AI assistant, at Felix Förtsch's direction. Consolidate preserved Nile login work with missing-expiry recovery and local logout that survives helper failure. Preserve private encrypted backup during recovery; never log credentials. Automated checks: TypeScript, 55 Nile tests, build and Linux unpacked packaging. Felix reported logout/restart behavior working; no full game installation claimed.
 ---
- doc/nile-login.md                             |  61 +++++
+ doc/nile-login.md                             |  61 ++++
+ public/locales/en/translation.json            |   6 +
  .../storeManagers/nile/__tests__/auth.test.ts | 115 ++++++++
  .../nile/__tests__/session.test.ts            |  56 ++++
- .../storeManagers/nile/__tests__/user.test.ts | 259 ++++++++++++++++++
+ .../storeManagers/nile/__tests__/user.test.ts | 270 ++++++++++++++++++
  src/backend/storeManagers/nile/library.ts     |  33 ++-
- src/backend/storeManagers/nile/session.ts     |  79 ++++++
- src/backend/storeManagers/nile/user.ts        | 191 ++++++++-----
+ src/backend/storeManagers/nile/session.ts     |  90 ++++++
+ src/backend/storeManagers/nile/user.ts        | 198 ++++++++-----
  src/common/nileAuth.ts                        |  85 ++++++
  src/common/types/nile.ts                      |   5 +-
  src/frontend/screens/WebView/index.css        |   8 +
- src/frontend/screens/WebView/index.tsx        | 189 ++++++++++---
- 11 files changed, 966 insertions(+), 115 deletions(-)
+ src/frontend/screens/WebView/index.tsx        | 194 ++++++++++---
+ 12 files changed, 1006 insertions(+), 115 deletions(-)
  create mode 100644 doc/nile-login.md
  create mode 100644 src/backend/storeManagers/nile/__tests__/auth.test.ts
  create mode 100644 src/backend/storeManagers/nile/__tests__/session.test.ts
@@ -95,6 +96,23 @@ index 00000000..15557fdd
 +
 +Do not post passwords, authorization callback URLs, authentication tokens or
 +raw Nile credential files in bug reports.
+diff --git a/public/locales/en/translation.json b/public/locales/en/translation.json
+index a70f6d1a..5514be7a 100644
+--- a/public/locales/en/translation.json
++++ b/public/locales/en/translation.json
+@@ -31,6 +31,12 @@
+             "toggle": "Use GOG affiliate links"
+         }
+     },
++    "amazon-login": {
++        "cancel": "Back to accounts",
++        "prepare-error": "Could not prepare Amazon login. Check your connection and Nile executable, then retry.",
++        "register-error": "Amazon login could not be completed. Retry to start a new sign-in attempt.",
++        "retry": "Retry"
++    },
+     "amazon-luna": "Amazon Luna",
+     "analyticsModal": {
+         "disable": "Disable",
 diff --git a/src/backend/storeManagers/nile/__tests__/auth.test.ts b/src/backend/storeManagers/nile/__tests__/auth.test.ts
 new file mode 100644
 index 00000000..daec48bb
@@ -280,16 +298,17 @@ index 00000000..08d351b6
 +})
 diff --git a/src/backend/storeManagers/nile/__tests__/user.test.ts b/src/backend/storeManagers/nile/__tests__/user.test.ts
 new file mode 100644
-index 00000000..6dbb9e5e
+index 00000000..52a86b7d
 --- /dev/null
 +++ b/src/backend/storeManagers/nile/__tests__/user.test.ts
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,270 @@
 +import { existsSync, readFileSync, rmSync } from 'graceful-fs'
 +import { session } from 'electron'
 +import { libraryManagerMap } from '../..'
 +import { configStore } from '../electronStores'
 +import { NileUser } from '../user'
 +import { logError } from 'backend/logger'
++import { createHash } from 'crypto'
 +
 +jest.mock('../..', () => ({
 +  libraryManagerMap: { nile: { runRunnerCommand: jest.fn() } }
@@ -347,38 +366,48 @@ index 00000000..6dbb9e5e
 +})
 +
 +describe('Nile logout', () => {
-+  it('does not restore the account after a helper failure and restart', async () => {
-+    files.set(currentPath, JSON.stringify(user))
-+    files.set(
-+      legacyPath,
-+      JSON.stringify({
-+        extensions: {
-+          customer_info: { given_name: 'Test', user_id: 'test-id' }
-+        }
++  it.each([false, true])(
++    'removes recovery backup and stays signed out (helper failure: %s)',
++    async (failed) => {
++      const encryptedPath = `/heroic/nile_config/nile/${createHash('md5').update(user.user_id).digest('hex')}.enc`
++      const backupPath = `${encryptedPath}.before-session-recovery`
++      files.set(encryptedPath, 'encrypted session')
++      files.set(backupPath, 'recovery backup')
++      files.set(currentPath, JSON.stringify(user))
++      files.set(
++        legacyPath,
++        JSON.stringify({
++          extensions: {
++            customer_info: { given_name: 'Test', user_id: 'test-id' }
++          }
++        })
++      )
++      jest.mocked(rmSync).mockImplementation((path) => {
++        files.delete(String(path))
 +      })
-+    )
-+    jest.mocked(rmSync).mockImplementation((path) => {
-+      files.delete(String(path))
-+    })
-+    const browser = {
-+      clearStorageData: jest.fn().mockResolvedValue(undefined),
-+      clearCache: jest.fn().mockResolvedValue(undefined),
-+      clearAuthCache: jest.fn().mockResolvedValue(undefined)
++      const browser = {
++        clearStorageData: jest.fn().mockResolvedValue(undefined),
++        clearCache: jest.fn().mockResolvedValue(undefined),
++        clearAuthCache: jest.fn().mockResolvedValue(undefined)
++      }
++      jest
++        .mocked(session.fromPartition)
++        .mockReturnValue(browser as unknown as Electron.Session)
++      runCommand.mockResolvedValue({
++        stdout: '',
++        stderr: '',
++        ...(failed ? { error: 'KeyError: NILE' } : {})
++      })
++      await NileUser.logout()
++      expect(files.has(backupPath)).toBe(false)
++      expect(rmSync).toHaveBeenCalledWith(backupPath, { force: true })
++      expect(files.has(encryptedPath)).toBe(true)
++      expect(NileUser.isLoggedIn()).toBe(false)
++      expect(browser.clearStorageData).toHaveBeenCalled()
++      expect(browser.clearAuthCache).toHaveBeenCalled()
++      expect(configStore.delete).toHaveBeenCalledWith('userData')
 +    }
-+    jest
-+      .mocked(session.fromPartition)
-+      .mockReturnValue(browser as unknown as Electron.Session)
-+    runCommand.mockResolvedValue({
-+      stdout: '',
-+      stderr: '',
-+      error: 'KeyError: NILE'
-+    })
-+    await NileUser.logout()
-+    expect(NileUser.isLoggedIn()).toBe(false)
-+    expect(browser.clearStorageData).toHaveBeenCalled()
-+    expect(browser.clearAuthCache).toHaveBeenCalled()
-+    expect(configStore.delete).toHaveBeenCalledWith('userData')
-+  })
++  )
 +})
 +
 +describe('Nile session detection', () => {
@@ -613,10 +642,10 @@ index caa02928..68bdf078 100644
      // Set NILE_CONFIG_PATH to a custom, Heroic-specific location so user-made
 diff --git a/src/backend/storeManagers/nile/session.ts b/src/backend/storeManagers/nile/session.ts
 new file mode 100644
-index 00000000..f8327cda
+index 00000000..fb75d927
 --- /dev/null
 +++ b/src/backend/storeManagers/nile/session.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,90 @@
 +import {
 +  createCipheriv,
 +  createDecipheriv,
@@ -641,6 +670,20 @@ index 00000000..f8327cda
 +  return value as Record<string, unknown>
 +}
 +
++function nileSessionPath(directory: string, userId: string): string {
++  return join(
++    directory,
++    `${createHash('md5').update(userId).digest('hex')}.enc`
++  )
++}
++
++export function nileSessionBackupPath(
++  directory: string,
++  userId: string
++): string {
++  return `${nileSessionPath(directory, userId)}.before-session-recovery`
++}
++
 +/** Repair Nile 1.2's legacy migration without exporting credentials or renewing their age. */
 +export function recoverNileSession(directory: string): boolean {
 +  const profile = join(directory, 'current_user.json')
@@ -650,10 +693,7 @@ index 00000000..f8327cda
 +  )
 +  if (typeof user_id !== 'string' || !user_id.trim()) return false
 +  const key = createHash('sha256').update(user_id).digest()
-+  const path = join(
-+    directory,
-+    `${createHash('md5').update(user_id).digest('hex')}.enc`
-+  )
++  const path = nileSessionPath(directory, user_id)
 +  if (!existsSync(path)) return false
 +  const encrypted = readFileSync(path)
 +  const ivCipher = createDecipheriv('aes-256-ecb', key, null)
@@ -688,7 +728,7 @@ index 00000000..f8327cda
 +    encrypt.update(JSON.stringify(data)),
 +    encrypt.final()
 +  ])
-+  const backup = `${path}.before-session-recovery`
++  const backup = nileSessionBackupPath(directory, user_id)
 +  if (!existsSync(backup)) copyFileSync(path, backup, constants.COPYFILE_EXCL)
 +  chmodSync(backup, 0o600)
 +  const temporary = `${path}.recovery-${process.pid}`
@@ -697,10 +737,10 @@ index 00000000..f8327cda
 +  return true
 +}
 diff --git a/src/backend/storeManagers/nile/user.ts b/src/backend/storeManagers/nile/user.ts
-index 28c7436a..b06dc2dc 100644
+index 28c7436a..6173f699 100644
 --- a/src/backend/storeManagers/nile/user.ts
 +++ b/src/backend/storeManagers/nile/user.ts
-@@ -4,129 +4,170 @@ import {
+@@ -4,129 +4,177 @@ import {
    NileRegisterData,
    NileUserData
  } from 'common/types/nile'
@@ -714,6 +754,7 @@ index 28c7436a..b06dc2dc 100644
 +import { nileConfigPath, nileUserData } from './constants'
  import { session } from 'electron'
 +import { join } from 'path'
++import { nileSessionBackupPath } from './session'
  
 -function authLogSanitizer(line: string) {
 -  try {
@@ -849,6 +890,7 @@ index 28c7436a..b06dc2dc 100644
    }
  
    static async logout() {
++    const user = this.getUserData()
      const commandParts = ['auth', '--logout']
  
 -    const res = await libraryManagerMap['nile'].runRunnerCommand(commandParts, {
@@ -881,6 +923,11 @@ index 28c7436a..b06dc2dc 100644
  
 +    // A broken helper must not resurrect the account after restart. Remove both
 +    // profile formats; retain encrypted credentials rather than deleting user data.
++    if (user) {
++      rmSync(nileSessionBackupPath(nileConfigPath, user.user_id), {
++        force: true
++      })
++    }
 +    rmSync(nileUserData, { force: true })
 +    rmSync(join(nileConfigPath, 'user.json'), { force: true })
      configStore.delete('userData')
@@ -1060,10 +1107,10 @@ index a0a6a1a5..51fac215 100644
    code: string
    code_verifier: string
 diff --git a/src/frontend/screens/WebView/index.css b/src/frontend/screens/WebView/index.css
-index 404db3e1..9e08ea26 100644
+index 95aa6cb7..3ca7997f 100644
 --- a/src/frontend/screens/WebView/index.css
 +++ b/src/frontend/screens/WebView/index.css
-@@ -29,4 +29,12 @@
+@@ -32,4 +32,12 @@
    &:has(.UpdateComponent) .WebView__webview {
      display: none;
    }
@@ -1077,28 +1124,20 @@ index 404db3e1..9e08ea26 100644
 +  }
  }
 diff --git a/src/frontend/screens/WebView/index.tsx b/src/frontend/screens/WebView/index.tsx
-index 3e45bc40..97830c6b 100644
+index 9ff4956d..5b8fa11d 100644
 --- a/src/frontend/screens/WebView/index.tsx
 +++ b/src/frontend/screens/WebView/index.tsx
-@@ -3,6 +3,7 @@ import {
-   useContext,
-   useEffect,
-   useLayoutEffect,
-+  useRef,
-   useState
- } from 'react'
- import { useTranslation } from 'react-i18next'
-@@ -18,7 +19,8 @@ import {
+@@ -21,7 +21,8 @@ import {
  } from 'frontend/helpers/gamepad'
  import './index.css'
  import LoginWarning from '../Login/components/LoginWarning'
 -import { NileLoginData } from 'common/types/nile'
 +import { NileLoginUrl } from 'common/types/nile'
 +import { getAmazonAuthorizationCode } from 'common/nileAuth'
- import {
-   Dialog,
-   DialogContent,
-@@ -52,9 +54,14 @@ export default function WebView() {
+ import { ITCHIO_OAUTH_REDIRECT_URI } from 'common/types/itchio'
+ import { Modal, ModalContent, ModalHeader } from 'frontend/components/UI/Modal'
+ 
+@@ -69,9 +70,14 @@ export default function WebView() {
      refresh: true,
      message: t('loading.website', 'Loading Website')
    }))
@@ -1111,10 +1150,10 @@ index 3e45bc40..97830c6b 100644
 +  const amazonLoginGeneration = useRef(0)
 +  const handledAmazonCode = useRef<string | null>(null)
 +  const amazonLoginInProgress = useRef(false)
-   const navigate = useNavigate()
-   // Keep the webview element in state (via a callback ref) instead of a plain
-   // ref so that mounting/remounting it — e.g. when switching stores — triggers
-@@ -124,41 +131,107 @@ export default function WebView() {
+   const [itchioOAuthUrl, setItchioOAuthUrl] = useState('')
+   const itchioOAuthHandledRef = useRef(false)
+   const [gameInputMode, setGameInputMode] = useState(false)
+@@ -183,20 +189,62 @@ export default function WebView() {
  
    useEffect(() => {
      if (pathname !== '/loginweb/nile') return
@@ -1184,6 +1223,11 @@ index 3e45bc40..97830c6b 100644
 +    }
 +  }, [pathname, amazonLoginAttempt])
  
+   useEffect(() => {
+     if (pathname !== '/loginweb/itchio') return
+@@ -235,25 +283,49 @@ export default function WebView() {
+   }, [pathname])
+ 
    const handleAmazonLogin = (code: string) => {
 -    if (!amazonLoginData) {
 -      console.error('Could not login to Amazon because login data is missing')
@@ -1237,7 +1281,7 @@ index 3e45bc40..97830c6b 100644
    }
  
    const handleSuccessfulLogin = () => {
-@@ -178,7 +251,9 @@ export default function WebView() {
+@@ -324,7 +396,9 @@ export default function WebView() {
    useLayoutEffect(() => {
      if (webview) {
        const loadstop = () => {
@@ -1245,10 +1289,10 @@ index 3e45bc40..97830c6b 100644
 +        if (!amazonLoginInProgress.current) {
 +          setLoading((current) => ({ ...current, refresh: false }))
 +        }
-
-         // only set a custom user agent for Epic, setting a user agent seems to break Cloudflare bot
-         // checks in the GOG login
-@@ -212,15 +287,12 @@ export default function WebView() {
+ 
+         if (startUrl === epicLoginUrl) {
+           webview.setUserAgent(epicUserAgent)
+@@ -358,15 +432,12 @@ export default function WebView() {
                gog.login(code).then(() => handleSuccessfulLogin())
              }
            }
@@ -1269,7 +1313,7 @@ index 3e45bc40..97830c6b 100644
          } else if (runner == 'legendary') {
            const pageUrl = webview.getURL()
            const parsedUrl = new URL(pageUrl)
-@@ -259,6 +331,27 @@ export default function WebView() {
+@@ -405,6 +476,27 @@ export default function WebView() {
          }
        }
  
@@ -1297,7 +1341,7 @@ index 3e45bc40..97830c6b 100644
        webview.addEventListener('dom-ready', loadstop)
        webview.addEventListener('did-fail-load', onerror)
        // if the page title changed it's because the store loaded so there's
-@@ -271,6 +364,10 @@ export default function WebView() {
+@@ -417,6 +509,10 @@ export default function WebView() {
        webview.addEventListener('page-title-updated', updateConnectivity)
  
        return () => {
@@ -1308,12 +1352,12 @@ index 3e45bc40..97830c6b 100644
          webview.removeEventListener('dom-ready', loadstop)
          webview.removeEventListener('did-fail-load', onerror)
          webview.removeEventListener('page-title-updated', updateConnectivity)
-@@ -448,15 +545,37 @@ export default function WebView() {
+@@ -685,15 +781,43 @@ export default function WebView() {
          />
        )}
        {loading.refresh && <UpdateComponent message={loading.message} />}
 -      <webview
--        key={store}
+-        key={store === 'gog' ? `${store}-${disableGOGAffiliate}` : store}
 -        ref={webviewRef}
 -        className="WebView__webview"
 -        partition={`persist:${store ?? (runner === 'legendary' ? 'epic' : runner === 'nile' ? 'amazon' : runner)}`}
@@ -1342,7 +1386,13 @@ index 3e45bc40..97830c6b 100644
 +      ) : (
 +        startUrl && (
 +          <webview
-+            key={runner === 'nile' ? `nile-${amazonLoginAttempt}` : store}
++            key={
++              runner === 'nile'
++                ? `nile-${amazonLoginAttempt}`
++                : store === 'gog'
++                  ? `${store}-${disableGOGAffiliate}`
++                  : store
++            }
 +            ref={webviewRef}
 +            className="WebView__webview"
 +            partition={`persist:${store ?? (runner === 'legendary' ? 'epic' : runner === 'nile' ? 'amazon' : runner)}`}
@@ -1352,9 +1402,9 @@ index 3e45bc40..97830c6b 100644
 +          />
 +        )
 +      )}
-       {showLoginWarningFor && (
+       {showLoginWarningFor && !showGogAffiliatePrompt && (
          <LoginWarning
            warnLoginForStore={showLoginWarningFor}
 -- 
-2.55.0
+2.56.0
 

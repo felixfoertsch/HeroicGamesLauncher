@@ -18,6 +18,12 @@
         "title": "Adtraction is blocked"
     },
     "Amazon Games": "Amazon Games",
+    "amazon-login": {
+        "cancel": "Back to accounts",
+        "prepare-error": "Could not prepare Amazon login. Check your connection and Nile executable, then retry.",
+        "register-error": "Amazon login could not be completed. Retry to start a new sign-in attempt.",
+        "retry": "Retry"
+    },
     "amazon-luna": "Amazon Luna",
     "analyticsModal": {
         "disable": "Disable",
@@ -456,6 +462,14 @@
         "store": "Store",
         "title": "Game Title"
     },
+    "gameCopies": {
+        "description": "Choose a store version to open its game page. Each copy keeps its own installation and settings.",
+        "installed": "Installed",
+        "notInstalled": "Not installed",
+        "show_one": "Show {{count}} copies of {{title}}",
+        "show_other": "Show {{count}} copies of {{title}}",
+        "title": "Copies of {{title}}"
+    },
     "generic": {
         "abort": "Abort",
         "error": {
@@ -621,6 +635,16 @@
         }
     },
     "Library": "Library",
+    "librarySummary": {
+        "copies": "Total store copies",
+        "duplicates": "Multi-store games",
+        "extra": "Extra copies",
+        "installed": "Installed games",
+        "matching": "Duplicates use matching store titles. Different editions stay separate; installations and settings are never merged.",
+        "scope": "Counts reflect current library filters. DLC is excluded.",
+        "title": "Library summary",
+        "unique": "Unique games"
+    },
     "loading": {
         "default": "Loading",
         "website": "Loading Website"

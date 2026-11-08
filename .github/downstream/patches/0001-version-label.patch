@@ -1,4 +1,4 @@
-From 5024712f4844ddb8d9c7029b2513081d4cf8ebf4 Mon Sep 17 00:00:00 2001
+From 1b643c2219a5376fcf63ddb7436b1eb6bb8e6337 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Felix=20F=C3=B6rtsch?= <mail@felixfoertsch.de>
 Date: Wed, 7 Oct 2026 07:19:23 +0200
 Subject: [PATCH] feat: Show upstream version and downstream patch count
@@ -43,5 +43,5 @@ index 5e245763..d68fe0ec 100644
    return (
      <div className="heroicVersionContainer" data-tour="sidebar-version">
 -- 
-2.55.0
+2.56.0
 
