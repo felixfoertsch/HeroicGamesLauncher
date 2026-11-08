@@ -1,3 +1,19 @@
+This fork prepares custom Heroic builds from upstream [`main`](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/tree/main) or a stable release plus accepted patches. `patch-queue` owns reconstruction and validated Linux stable/nightly publication; generated `main` follows upstream main without workflows. Accepted patches: [0001](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0001-version-label.patch) version label, [0002](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0002-stack-game-copies.patch) cross-store stacking, [0003](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0003-library-summary.patch) library totals, and [0004](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0004-nile-session-recovery.patch) Nile session recovery.
+
+# Downstream patches
+
+Both channels apply the ordered [patch queue](https://github.com/felixfoertsch/HeroicGamesLauncher/tree/patch-queue/.github/downstream/patches):
+
+1. **[0001 — Version label](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0001-version-label.patch):** sidebar shows upstream version plus accepted patch count, for example `2.22.3 + #4`.
+
+2. **[0002 — Cross-store game stacking](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0002-stack-game-copies.patch):** matching store copies share one library card with a copy chooser. Installations, settings and game pages stay independent. See `doc/game-stacking.md` in generated source for matching rules and smoke tests.
+
+3. **[0003 — Library summary](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0003-library-summary.patch):** click the game counter for per-store totals, unique games, multi-store games, extra copies and installed games. Counts follow current library filters.
+
+4. **[0004 — Amazon session recovery](https://github.com/felixfoertsch/HeroicGamesLauncher/blob/patch-queue/.github/downstream/patches/0004-nile-session-recovery.patch):** recover Nile profiles and login redirects, repair missing expiry metadata when refresh credentials exist, and persist local logout even when Nile fails. See `doc/nile-login.md` in generated source.
+
+---
+
 # Heroic Games Launcher
 
 [![GitHub release](https://img.shields.io/github/v/release/Heroic-Games-Launcher/HeroicGamesLauncher?style=for-the-badge)](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest)
