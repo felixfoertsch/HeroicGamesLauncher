@@ -1,4 +1,4 @@
-"""Prepare stable and nightly candidates from patch-queue's ordered patches."""
+"""Prepare edge candidates from patch-queue's ordered patches."""
 import argparse
 from email import policy
 from email.parser import Parser
@@ -52,7 +52,7 @@ def patch_queue(repo):
 def published_candidate(plan, repo='.'):
     pages = json.loads(command(['gh', 'api', f'repos/{REPOSITORY}/releases?per_page=100', '--paginate', '--slurp']))
     for release in (release for page in pages for release in page):
-        if release['draft'] or release['prerelease'] != (plan['channel'] == 'nightly'):
+        if release['draft'] or release['prerelease']:
             continue
         assets = {asset['name']: asset for asset in release['assets']}
         if not {'build-info.json', 'SHA256SUMS'} <= assets.keys():
@@ -78,9 +78,9 @@ def published_candidate(plan, repo='.'):
                         'latest-linux.yml', 'archlinux-image.txt', f'Heroic-{tag}-source.tar.gz',
                         f'Heroic-{tag}-linux-x86_64.AppImage', f'Heroic-{tag}-linux-x64.tar.xz'}
             package = f"heroic-games-launcher-bin-{previous['pacmanVersion']}-1-x86_64.pkg.tar.zst"
-            if plan['channel'] == 'nightly' or package in assets:
+            if package in assets:
                 required.add(package)
-            if plan['channel'] == 'stable':
+            if plan['channel'] == 'edge':
                 if package + '.sig' in assets:
                     required.update({package, package + '.sig', 'heroic-games-launcher-bin-key.asc',
                                      'heroic-games-launcher-bin-key.fingerprint', 'heroic-games-launcher-bin.db',
@@ -97,7 +97,7 @@ def published_candidate(plan, repo='.'):
                         all(assets[name].get('digest') == digest for name, digest in recorded.items()))
             if not complete:
                 continue
-            if plan['channel'] == 'stable':
+            if plan['channel'] == 'edge':
                 for delivery, names in [('downstream-feed', {'latest-linux.yml'}),
                                         ('pacman', {name for name in assets if name.startswith('heroic-games-launcher-bin')})]:
                     if delivery == 'pacman' and package + '.sig' not in assets:
@@ -142,8 +142,10 @@ def prepare(repo, source, output, upstream_sha, upstream_tag, channel, build_id,
     repo, source, output = (Path(value).resolve() for value in (repo, source, output))
     if source.exists() or output.exists() or not SHA.fullmatch(upstream_sha):
         raise ValueError("Invalid candidate destination or upstream SHA")
-    if channel not in {"stable", "nightly"} or not re.fullmatch(r"v?\d+\.\d+\.\d+", upstream_tag):
+    if channel != "edge" or not re.fullmatch(r"v?\d+\.\d+\.\d+", upstream_tag):
         raise ValueError("Invalid channel upstream version")
+    tags = [line.split()[1].removeprefix("refs/tags/") for line in git(repo, "ls-remote", "--tags", "--refs", "origin").splitlines()]
+    version = next_version(upstream_tag, tags, edge=True)
     patches = reconstruct(repo, source, upstream_sha)
     # Display upstream identity separately from CalVer used by package updates.
     display = source / 'src/common/downstreamVersion.ts'
@@ -176,14 +178,8 @@ def prepare(repo, source, output, upstream_sha, upstream_tag, channel, build_id,
     candidate = git(source, "rev-parse", "HEAD")
     if git(source, "ls-files", ".github/workflows"):
         raise ValueError("Generated main candidate contains workflow files")
-    tags = [line.split()[1].removeprefix("refs/tags/") for line in git(repo, "ls-remote", "--tags", "--refs", "origin").splitlines()]
-    version = next_version(upstream_tag, tags)
     if not re.fullmatch(r'[1-9]\d*\.[1-9]\d*', build_id):
         raise ValueError('Invalid build identity')
-    if channel == 'nightly':
-        version['tag'] = 'nightly-' + version['tag'] + '-' + build_id
-        version['version'] += '.nightly.' + build_id
-        version['pacmanVersion'] += '.nightly.' + build_id
     # Keep expectedAutomation in schema 2 for existing release provenance.
     plan = {"schema": 2, "repository": REPOSITORY, "channel": channel, "candidate": candidate,
             "base": upstream_sha, "upstream": {"tag": upstream_tag, "sha": upstream_sha},
@@ -266,15 +262,10 @@ def freshness(repo, plan):
     if remote_sha(repo, 'refs/heads/patch-queue') != plan['expectedAutomation']:
         raise ValueError('Patch queue changed while testing')
     upstream = 'https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher.git'
-    if plan['channel'] == 'nightly':
-        selected = git(repo, 'ls-remote', upstream, 'refs/heads/main').split()[0]
-    else:
-        release = json.loads(command(['gh', 'api', 'repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest']))
-        if release['tag_name'] != plan['upstream']['tag']:
-            raise ValueError('Latest upstream release changed')
-        rows = git(repo, 'ls-remote', upstream, 'refs/tags/' + release['tag_name'], 'refs/tags/' + release['tag_name'] + '^{}').splitlines()
-        refs = dict(row.split()[::-1] for row in rows)
-        selected = refs.get('refs/tags/' + release['tag_name'] + '^{}', refs.get('refs/tags/' + release['tag_name']))
+    release = json.loads(command(['gh', 'api', 'repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest']))
+    if release['tag_name'] != plan['upstream']['tag']:
+        raise ValueError('Latest upstream release changed')
+    selected = git(repo, 'ls-remote', upstream, 'refs/heads/main').split()[0]
     if selected != plan['base']:
         raise ValueError('Upstream changed while testing')
 
@@ -284,13 +275,11 @@ def publish_release(output, plan):
     result = subprocess.run(['gh', 'release', 'view', plan['tag'], '--repo', REPOSITORY, '--json', 'databaseId'],
                             capture_output=True, text=True)
     files = [str(p) for p in sorted(output.iterdir())]
-    nightly = plan.get('channel') == 'nightly'
     if result.returncode:
         if 'HTTP 404' not in result.stderr and 'release not found' not in result.stderr.lower():
             raise RuntimeError('Cannot inspect existing release: ' + result.stderr)
         command(['gh', 'release', 'create', plan['tag'], *files, '--repo', REPOSITORY,
                  '--verify-tag', '--draft', '--latest=false',
-                 *(['--prerelease'] if nightly else []),
                  '--title', 'Heroic ' + plan['tag'] + ' — unofficial downstream',
                  '--notes-file', str(output / 'RELEASE-NOTES.md')])
     else:
@@ -321,14 +310,13 @@ def publish_release(output, plan):
             raise ValueError('Uploaded release hash mismatch')
     freshness('.', plan)
     command(['gh', 'release', 'edit', plan['tag'], '--repo', REPOSITORY, '--draft=false',
-             '--prerelease=true' if nightly else '--prerelease=false',
-             '--latest=false' if nightly else '--latest'])
+             '--prerelease=false', '--latest'])
 
 
 def publish(repo, output, channel, build_id, patch_queue_sha):
     if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY:
         raise ValueError('Publication restricted to fork')
-    plan = verify(repo, output, channel, build_id, patch_queue_sha, signed=channel == 'stable')
+    plan = verify(repo, output, channel, build_id, patch_queue_sha, signed=True)
     freshness(repo, plan)
     tag_ref = 'refs/tags/' + plan['tag']
     existing_tag = remote_sha(repo, tag_ref, required=False)
@@ -336,31 +324,27 @@ def publish(repo, output, channel, build_id, patch_queue_sha):
         raise ValueError('Published identity reserved for another source')
     pushes = [f"{plan['candidate']}:{tag_ref}"]
     leases = [f'--force-with-lease={tag_ref}:{existing_tag}']
-    if channel == 'nightly':
-        expected = plan['expectedMain']
-        if remote_sha(repo, 'refs/heads/main', required=False) != expected:
-            raise ValueError('main advanced while testing')
-        backup = 'refs/tags/downstream-backup/' + build_id
-        leases += [f'--force-with-lease=refs/heads/main:{expected}', f'--force-with-lease={backup}:']
-        pushes += [f"{plan['candidate']}:refs/heads/main"]
-        if expected:
-            git(repo, 'fetch', '--no-tags', 'origin', expected)
-            pushes += [f'{expected}:{backup}']
+    expected = plan['expectedMain']
+    if remote_sha(repo, 'refs/heads/main', required=False) != expected:
+        raise ValueError('main advanced while testing')
+    backup = 'refs/tags/downstream-backup/' + build_id
+    leases += [f'--force-with-lease=refs/heads/main:{expected}', f'--force-with-lease={backup}:']
+    pushes += [f"{plan['candidate']}:refs/heads/main"]
+    if expected:
+        git(repo, 'fetch', '--no-tags', 'origin', expected)
+        pushes += [f'{expected}:{backup}']
     git(repo, 'push', '--atomic', *leases, 'origin', *pushes)
     output = Path(output)
     (output / 'source.bundle').unlink()
     (output / 'RELEASE-NOTES.md').write_text(render_notes(plan))
     checksums(output)
-    if channel == 'stable':
-        command(['bash', '.github/downstream/publish.sh', str(output)])
-    else:
-        publish_release(output, plan)
+    command(['bash', '.github/downstream/publish.sh', str(output)])
 
 
 def sync_main(repo, output, expected_main):
     plan = json.loads((Path(output) / "build-info.json").read_text())
-    if plan.get("channel") != "nightly" or not SHA.fullmatch(expected_main):
-        raise ValueError("Only nightly candidates may update generated main")
+    if plan.get("channel") != "edge" or not SHA.fullmatch(expected_main):
+        raise ValueError("Only edge candidates may update generated main")
     checksums(output, verify=True)
     if remote_sha(repo, "refs/heads/main") != expected_main:
         raise ValueError("main advanced while testing")

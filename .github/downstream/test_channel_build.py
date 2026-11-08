@@ -9,7 +9,7 @@ import downstream as d
 
 
 class ChannelBuildTests(unittest.TestCase):
-    def test_generated_nightly_removes_workflows_and_keeps_tools(self):
+    def test_generated_edge_removes_workflows_and_keeps_tools(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); repo = root / "patch-queue"; source = root / "source"; output = root / "output"
             d.command(["git", "init", "-b", "patch-queue", str(repo)])
@@ -25,23 +25,26 @@ class ChannelBuildTests(unittest.TestCase):
             d.git(remote, "config", "maintenance.autoDetach", "false")
             d.git(remote, "config", "gc.autoDetach", "false")
             d.git(repo, "remote", "add", "origin", str(remote)); d.git(repo, "push", "origin", "patch-queue")
-            plan = c.prepare(repo, source, output, upstream, "v2.0.0", "nightly", "123.1")
-            self.assertEqual(plan["channel"], "nightly")
+            plan = c.prepare(repo, source, output, upstream, "v2.0.0", "edge", "123.1")
+            self.assertEqual(plan["channel"], "edge")
             self.assertFalse((source / ".github/workflows").exists())
             self.assertTrue((source / ".github/downstream/tool.py").is_file())
             c.validate_plan_version(plan)
-            self.assertTrue(plan['tag'].startswith('nightly-'))
+            self.assertTrue('-edge-' in plan['tag'])
             self.assertEqual(plan['patches'], [])
             self.assertIn('Upstream README', (source / 'README.md').read_text())
-            second = c.prepare(repo, root / 'second', root / 'second-output', upstream, 'v2.0.0', 'nightly', '123.1')
+            second = c.prepare(repo, root / 'second', root / 'second-output', upstream, 'v2.0.0', 'edge', '123.1')
             self.assertEqual(plan['candidate'], second['candidate'])
             with patch.object(c, 'published_candidate', return_value=True):
                 skipped = c.prepare(repo, root / 'skipped', root / 'skipped-output', upstream,
-                                    'v2.0.0', 'nightly', '123.1', skip_published=True)
+                                    'v2.0.0', 'edge', '123.1', skip_published=True)
             self.assertFalse(skipped['build'])
             self.assertFalse((root / 'skipped-output').exists())
-            with patch.object(c, 'git', return_value='different-upstream'):
+            with patch.object(c, 'git', return_value='different-upstream'), patch.object(c, 'command', return_value=json.dumps({'tag_name': 'v2.0.0'})):
                 with self.assertRaisesRegex(ValueError, 'Upstream changed'):
+                    c.freshness(repo, plan)
+            with patch.object(c, 'command', return_value=json.dumps({'tag_name': 'v2.0.1'})):
+                with self.assertRaisesRegex(ValueError, 'Latest upstream release changed'):
                     c.freshness(repo, plan)
             d.git(repo, 'commit', '--allow-empty', '-m', 'queue changed')
             d.git(repo, 'push', 'origin', 'patch-queue')
@@ -79,14 +82,14 @@ class ChannelBuildTests(unittest.TestCase):
             d.git(remote, 'config', 'maintenance.autoDetach', 'false')
             d.git(remote, 'config', 'gc.autoDetach', 'false')
             d.git(repo, 'remote', 'add', 'origin', str(remote)); d.git(repo, 'push', 'origin', 'patch-queue')
-            plan = c.prepare(repo, root / 'source', root / 'output', upstream, 'v2.0.0', 'nightly', '123.1')
+            plan = c.prepare(repo, root / 'source', root / 'output', upstream, 'v2.0.0', 'edge', '123.1')
             self.assertEqual((root / 'source/game.txt').read_text(), 'stacked\n')
             self.assertEqual((root / 'source' / sidebar.relative_to(repo)).read_text(), "export const downstreamVersion = '2.0.0 + #1'\n")
             self.assertEqual(plan['patches'][0]['original'], 'f' * 40)
             self.assertEqual(plan['patches'][0]['subject'], 'feat: Stack games')
             self.assertEqual(plan['patches'][0]['status'], 'replayed')
             applied = plan['patches'][0]['commit']
-            second = c.prepare(repo, root / 'second', root / 'second-output', applied, 'v2.0.0', 'stable', '123.1')
+            second = c.prepare(repo, root / 'second', root / 'second-output', applied, 'v2.0.0', 'edge', '123.1')
             self.assertEqual(second['patches'][0]['status'], 'upstream-equivalent')
             self.assertEqual(second['patches'][0]['commit'], applied)
 
@@ -126,16 +129,16 @@ class ChannelBuildTests(unittest.TestCase):
     def test_published_candidate_skips_only_complete_matching_release(self):
         import hashlib
         plan = {'candidate': 'a' * 40, 'base': 'b' * 40, 'expectedAutomation': 'c' * 40,
-                'channel': 'stable', 'upstream': {'tag': 'v2.0.0', 'sha': 'b' * 40},
+                'channel': 'edge', 'upstream': {'tag': 'v2.0.0', 'sha': 'b' * 40},
                 'passedChecks': c.CHECKS}
         from calver import version_fields
-        plan.update(version_fields('v2.0.0', '2026.10.08', 1))
+        plan.update(version_fields('v2.0.0', '2026.10.08', 1, edge=True))
         plan.update({'schema': 2, 'repository': c.REPOSITORY})
         manifest = json.dumps(plan)
         names = ['build-info.json', 'packaging.json', 'RELEASE-NOTES.md', 'latest-linux.yml',
                  'archlinux-image.txt', f"Heroic-{plan['tag']}-source.tar.gz",
                  f"Heroic-{plan['tag']}-linux-x86_64.AppImage", f"Heroic-{plan['tag']}-linux-x64.tar.xz",
-                 'SIGNING-STATUS.txt']
+                 'SIGNING-STATUS.txt', f"heroic-games-launcher-bin-{plan['pacmanVersion']}-1-x86_64.pkg.tar.zst"]
         assets = [{'name': name, 'digest': 'sha256:' + hashlib.sha256(
             manifest.encode() if name == 'build-info.json' else b'fixture').hexdigest()} for name in names]
         sums = ''.join(f"{asset['digest'][7:]}  {asset['name']}\n" for asset in assets)
@@ -178,6 +181,29 @@ class ChannelBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'hash mismatch'):
                 c.published_candidate(plan)
 
+    def test_edge_release_is_latest_and_not_prerelease(self):
+        import hashlib
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            (output / 'asset').write_bytes(b'validated')
+            release = {'assets': [{'name': 'asset', 'digest': 'sha256:' + hashlib.sha256(b'validated').hexdigest()}]}
+            def run(args):
+                if args[1:3] == ['release', 'view']:
+                    return json.dumps({'databaseId': 1})
+                if args[1] == 'api':
+                    return json.dumps(release)
+                return ''
+            with patch.object(c.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stderr='HTTP 404')), \
+                 patch.object(c, 'command', side_effect=run) as commands, patch.object(c, 'freshness'):
+                c.publish_release(output, {'tag': 'v2.22.4-edge-2026.11.08.1', 'channel': 'edge'})
+            edit = commands.call_args.args[0]
+            self.assertIn('--latest', edit)
+            self.assertIn('--prerelease=false', edit)
+            create = commands.call_args_list[0].args[0]
+            self.assertIn('--draft', create)
+            self.assertNotIn('--prerelease', create)
+
     def test_readme_links_each_patch_on_control_branch(self):
         repo = Path(__file__).parents[2]
         readme = (repo / 'README.md').read_text()
@@ -204,13 +230,20 @@ class ChannelBuildTests(unittest.TestCase):
         for contract in ('pnpm install --frozen-lockfile', 'pnpm codecheck', 'pnpm test --runInBand',
                          'pnpm lint', 'pnpm prettier', '--linux AppImage tar.xz',
                          'makepkg --nodeps', 'pacman --config', 'digest-mismatch: error',
-                         'passedChecks', "matrix.channel == 'stable'", 'persist-credentials: false'):
+                         'passedChecks', 'CHANNEL: edge', 'persist-credentials: false'):
             self.assertIn(contract, workflow)
         self.assertEqual(workflow.count("node-version: '24.21.0'"), 2)
         self.assertIn('node = "24.21.0"', (workflows.parents[1] / '.mise.toml').read_text())
         self.assertIn('.mise.toml', c.COPIED)
         self.assertEqual(sorted(path.name for path in workflows.parents[1].glob('README*')), ['README.md'])
         self.assertNotIn('DOWNSTREAM_PUSH_TOKEN', workflow)
+        before_publish, publish_job = workflow.split('\n  publish:', 1)
+        for name in ('PACMAN_SIGNING_KEY', 'PACMAN_SIGNING_PASSPHRASE'):
+            secret = '${{ secrets.' + name + ' }}'
+            self.assertNotIn(secret, before_publish)
+            self.assertIn(secret, publish_job)
+        self.assertNotIn('${{ vars.PACMAN_SIGNING_FINGERPRINT }}', before_publish)
+        self.assertIn('${{ vars.PACMAN_SIGNING_FINGERPRINT }}', publish_job)
         self.assertIn('branches: [patch-queue]', workflow)
         self.assertEqual(workflow.count("github.ref == 'refs/heads/patch-queue'"), 2)
         self.assertIn('--patch-queue-sha', workflow)

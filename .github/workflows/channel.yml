@@ -1,8 +1,9 @@
-name: Downstream channels
+name: Downstream edge
 
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '0 5 * * *'
+      timezone: 'Europe/Berlin'
   push:
     branches: [patch-queue]
   workflow_dispatch:
@@ -96,9 +97,6 @@ jobs:
   build:
     needs: refresh
     if: needs.refresh.outputs.changed == 'false' && github.repository == 'felixfoertsch/HeroicGamesLauncher' && github.ref == 'refs/heads/patch-queue'
-    strategy:
-      matrix:
-        channel: [stable, nightly]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -113,18 +111,11 @@ jobs:
         working-directory: control
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ matrix.channel }}
+          CHANNEL: edge
         run: |
           set -euo pipefail
-          if [[ "$CHANNEL" == stable ]]; then
-            gh api repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest > "$RUNNER_TEMP/release.json"
-            tag=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$RUNNER_TEMP/release.json")
-            git fetch --no-tags https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher.git "refs/tags/$tag"
-             sha=$(git rev-parse 'FETCH_HEAD^{commit}')
-          else
-            tag=$(gh api repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest --jq .tag_name)
-            sha=$(git ls-remote https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher.git refs/heads/main | cut -f1)
-          fi
+          tag=$(gh api repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest --jq .tag_name)
+          sha=$(git ls-remote https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher.git refs/heads/main | cut -f1)
           git fetch --no-tags https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher.git "$sha"
           test -n "$sha"; test -n "$tag"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"; echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -132,20 +123,22 @@ jobs:
         id: prepare
         working-directory: control
         env:
-          CHANNEL: ${{ matrix.channel }}
+          CHANNEL: edge
           GH_TOKEN: ${{ github.token }}
           REBUILD: ${{ inputs.rebuild || false }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
         run: |
           flags=()
           [[ "$REBUILD" == true ]] || flags+=(--skip-published)
-          python3 .github/downstream/channel_build.py prepare --repo . --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/release" --upstream-sha '${{ steps.upstream.outputs.sha }}' --upstream-tag '${{ steps.upstream.outputs.tag }}' --channel "$CHANNEL" --build-id '${{ github.run_id }}.${{ github.run_attempt }}' "${flags[@]}"
+          python3 .github/downstream/channel_build.py prepare --repo . --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/release" --upstream-sha "$UPSTREAM_SHA" --upstream-tag "$UPSTREAM_TAG" --channel "$CHANNEL" --build-id '${{ github.run_id }}.${{ github.run_attempt }}' "${flags[@]}"
       - name: Upload channel build decision
         run: |
           mkdir -p "$RUNNER_TEMP/decision"
           printf '%s\n' '${{ steps.prepare.outputs.build }}' > "$RUNNER_TEMP/decision/build"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: decision-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: decision-edge-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/decision/build
       - name: Set up Node
         if: steps.prepare.outputs.build == 'true'
@@ -297,7 +290,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: channel-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: channel-edge-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release/*
           if-no-files-found: error
           retention-days: 30
@@ -306,10 +299,6 @@ jobs:
   publish:
     needs: build
     if: github.repository == 'felixfoertsch/HeroicGamesLauncher' && github.ref == 'refs/heads/patch-queue'
-    strategy:
-      max-parallel: 1
-      matrix:
-        channel: [stable, nightly]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -321,7 +310,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: decision-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: decision-edge-${{ github.run_id }}-${{ github.run_attempt }}
           digest-mismatch: error
           path: decision
       - id: decision
@@ -332,14 +321,14 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         if: steps.decision.outputs.build == 'true'
         with:
-          name: channel-${{ matrix.channel }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: channel-edge-${{ github.run_id }}-${{ github.run_attempt }}
           digest-mismatch: error
           path: release-assets
       - name: Verify trusted channel provenance before signing
         if: steps.decision.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ matrix.channel }}
+          CHANNEL: edge
           CONTROL_SHA: ${{ github.sha }}
           BUILD_ID: ${{ github.run_id }}.${{ github.run_attempt }}
         run: |
@@ -350,8 +339,8 @@ jobs:
           plan = verify('.', 'release-assets', os.environ['CHANNEL'], os.environ['BUILD_ID'], os.environ['CONTROL_SHA'])
           freshness('.', plan)
           PYTHON
-      - name: Sign stable pacman package only
-        if: matrix.channel == 'stable' && steps.decision.outputs.build == 'true'
+      - name: Sign edge pacman package
+        if: steps.decision.outputs.build == 'true'
         id: sign
         env:
           PACMAN_SIGNING_KEY: ${{ secrets.PACMAN_SIGNING_KEY }}
@@ -363,7 +352,7 @@ jobs:
         env:
           GIT_CONFIG_GLOBAL: ${{ runner.temp }}/heroic-trusted-gitconfig
           GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ matrix.channel }}
+          CHANNEL: edge
           SIGNED: ${{ steps.sign.outputs.signed }}
         run: |
           gh auth setup-git

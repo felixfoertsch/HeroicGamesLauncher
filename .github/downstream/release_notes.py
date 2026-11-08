@@ -39,17 +39,13 @@ def render_notes(plan, signed=False):
         "tar.xz are available; no unsigned pacman update repository is published."
     )
     tag = plan["tag"]
-    channel = plan.get("channel", "stable")
-    channel_note = ("This is an isolated nightly prerelease. It never replaces Latest, "
-                    "the stable AppImage feed or the signed pacman channel.\n\n" if channel == "nightly" else "")
     return (
         f"## Heroic {tag}\n\n"
         f"Unofficial **Linux x86-64** build of upstream **{plan['upstream']['tag']}** "
         "plus the ordered accepted patch queue and trusted publisher tooling. Unaccepted feature-branch work is excluded.\n\n" +
-        channel_note +
         "### Version\n\n"
         f"Public tag and filenames: **`{tag}`**. The format is "
-        "`heroic-release-tag-YYYY.MM.DD.n`; the date uses Europe/Berlin and `n` starts "
+        "`heroic-release-tag-edge-YYYY.MM.DD.n`; the date uses Europe/Berlin and `n` starts "
         "at 1 for each upstream-tag/date pair. Reserved tags are never reused.\n\n"
         f"Electron's internal version is `{plan['version']}`; Arch's package version is "
         f"`{plan['pacmanVersion']}-{plan['pacmanRelease']}`. These compatible encodings "
@@ -65,8 +61,7 @@ def render_notes(plan, signed=False):
         f"{distribution}\n\n"
         "For migration from the old `-felix.<run-id>.<attempt>` builds, install the first "
         "CalVer AppImage manually once. Subsequent AppImage updates use this fork's " +
-        ("the feed pinned to this exact nightly; install another nightly manually. " if channel == 'nightly' else
-         "`downstream-feed`; native Arch installations update through pacman once signing is set up. ") +
+        "`downstream-feed`; native Arch installations update through pacman once signing is set up. " +
         "Back up Heroic's configuration before switching packages.\n\n"
         f"[Setup, signing and recovery instructions]({DOCS}).\n\n"
         "### Source and validation\n\n"

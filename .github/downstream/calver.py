@@ -23,7 +23,7 @@ def release_date(now=None):
     return now.astimezone(TIMEZONE).strftime("%Y.%m.%d")
 
 
-def version_fields(upstream_tag, stamp, sequence):
+def version_fields(upstream_tag, stamp, sequence, edge=False):
     if not isinstance(upstream_tag, str) or not STABLE_TAG.fullmatch(upstream_tag):
         raise ValueError("CalVer requires an ordinary stable upstream release tag")
     if not isinstance(stamp, str) or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", stamp):
@@ -34,7 +34,7 @@ def version_fields(upstream_tag, stamp, sequence):
         raise ValueError("Release sequence must be a positive safe integer")
     core = upstream_tag.removeprefix("v")
     return {
-        "tag": f"{upstream_tag}-{stamp}.{sequence}",
+        "tag": f"{upstream_tag}-{'edge-' if edge else ''}{stamp}.{sequence}",
         "version": f"{core}-{year}.{month}.{day}.{sequence}",
         "pacmanVersion": f"{core}_{stamp}.{sequence}",
         "pacmanRelease": "1",
@@ -42,38 +42,27 @@ def version_fields(upstream_tag, stamp, sequence):
     }
 
 
-def next_version(upstream_tag, existing_tags, now=None):
+def next_version(upstream_tag, existing_tags, now=None, edge=False):
     stamp = release_date(now)
     used = []
     for tag in existing_tags:
-        match = RELEASE_TAG.fullmatch(tag)
+        if edge and tag.startswith('nightly-'):
+            tag = re.sub(r'-[1-9]\d*\.[1-9]\d*$', '', tag[8:])
+        match = RELEASE_TAG.fullmatch(tag.replace("-edge-", "-", 1) if edge else tag)
         if match and match["upstream"] == upstream_tag and match["date"] == stamp:
             used.append(int(match["n"]))
-    return version_fields(upstream_tag, stamp, max(used, default=0) + 1)
+    return version_fields(upstream_tag, stamp, max(used, default=0) + 1, edge=edge)
 
 
 def validate_plan_version(plan):
-    if plan.get('channel') == 'nightly':
-        stable = dict(plan)
-        build_id = plan.get('buildId', '')
-        if not re.fullmatch(r'[1-9]\d*\.[1-9]\d*', build_id):
-            raise ValueError('Invalid nightly identity')
-        suffix = '-' + build_id
-        if not plan.get('tag', '').startswith('nightly-') or not plan['tag'].endswith(suffix):
-            raise ValueError('Invalid nightly tag')
-        stable['tag'] = plan['tag'][8:-len(suffix)]
-        for key in ('version', 'pacmanVersion'):
-            value = plan.get(key, '')
-            ending = '.nightly.' + build_id
-            if not value.endswith(ending):
-                raise ValueError('Invalid nightly version')
-            stable[key] = value[:-len(ending)]
-        stable['channel'] = 'stable'
-        return validate_plan_version(stable)
-    match = RELEASE_TAG.fullmatch(plan.get("tag", ""))
+    edge = plan.get('channel') == 'edge'
+    tag = plan.get('tag', '')
+    match = RELEASE_TAG.fullmatch(tag.replace('-edge-', '-', 1) if edge else tag)
+    if edge and '-edge-' not in tag:
+        raise ValueError('Invalid edge tag')
     if not match:
         raise ValueError("Invalid CalVer release tag")
-    expected = version_fields(match["upstream"], match["date"], int(match["n"]))
+    expected = version_fields(match["upstream"], match["date"], int(match["n"]), edge=edge)
     if plan.get("upstream", {}).get("tag") != match["upstream"]:
         raise ValueError("CalVer prefix does not identify the selected upstream release")
     for key, value in expected.items():

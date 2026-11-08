@@ -202,8 +202,7 @@ def prepare(repo, source, output, release, build_id, event):
 def packaging(source, output):
     output = Path(output)
     plan = json.loads((output / "build-info.json").read_text())
-    feed = (f"https://github.com/{REPOSITORY}/releases/download/{plan['tag']}"
-            if plan.get("channel") == "nightly" else FEED_URL)
+    feed = FEED_URL
     config = {"extends": str(Path(source).resolve() / "electron-builder.yml"),
               "extraMetadata": {"version": plan["version"],
                                 "repository": {"type": "git", "url": f"https://github.com/{REPOSITORY}"}},

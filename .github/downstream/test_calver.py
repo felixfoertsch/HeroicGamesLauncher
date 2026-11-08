@@ -11,6 +11,13 @@ import calver
 class CalVerTests(unittest.TestCase):
     NOW = datetime(2026, 9, 6, 12, tzinfo=timezone.utc)
 
+    def test_edge_tags_and_legacy_reservations(self):
+        tags = ['v2.22.1-2026.09.06.9', 'v2.22.1-edge-2026.09.06.10',
+                'nightly-v2.22.1-2026.09.06.99-123.1']
+        version = calver.next_version('v2.22.1', tags, self.NOW, edge=True)
+        self.assertEqual(version['tag'], 'v2.22.1-edge-2026.09.06.100')
+        calver.validate_plan_version({**version, 'channel': 'edge', 'upstream': {'tag': 'v2.22.1'}})
+
     def test_public_and_internal_versions(self):
         version = calver.next_version("v2.22.1", [], self.NOW)
         self.assertEqual(version["tag"], "v2.22.1-2026.09.06.1")
