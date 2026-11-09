@@ -38,3 +38,6 @@ flatpak-build
 
 playwright-report
 public/bin/**
+
+__pycache__/
+*.pyc
