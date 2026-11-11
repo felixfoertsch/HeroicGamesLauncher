@@ -42,3 +42,6 @@ public/bin/**
 # storybook
 storybook-static
 debug-storybook.log
+
+__pycache__/
+*.pyc
